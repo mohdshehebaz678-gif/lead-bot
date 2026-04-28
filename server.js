@@ -547,7 +547,26 @@ app.post('/import-leads', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send('✅ Lead Bot is running!'));
+async function syncStaffFromSheet() {
+  try {
+    const res = await axios.get(process.env.SHEET_API);
+    const staffList = res.data;
 
+    for (const s of staffList) {
+      if (!s.userName) continue;
+
+      await Staff.updateOne(
+        { userName: s.userName },
+        { $set: s },
+        { upsert: true }
+      );
+    }
+
+    console.log("✅ Staff synced from Google Sheet:", staffList.length);
+  } catch (err) {
+    console.error("❌ Sync error:", err.message);
+  }
+}
 // ============================================
 // START
 // ============================================
