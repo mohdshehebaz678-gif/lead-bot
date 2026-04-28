@@ -1,139 +1,213 @@
 require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
 const axios = require('axios');
-const cron = require('node-cron');
+const { MongoClient } = require('mongodb');
+const { google } = require('googleapis');
 
 const app = express();
 app.use(express.json());
 
-// ============================================
-// CONFIG
-// ============================================
-const TOKEN = process.env.BOT_TOKEN;
-const API_URL = `https://api.telegram.org/bot${TOKEN}`;
-const COOLING_MS = 2 * 60 * 60 * 1000;
+// ==================== CONFIG ====================
+const CONFIG = {
+  TOKEN: process.env.BOT_TOKEN,
+  SHEET_ID: process.env.GOOGLE_SHEET_ID || '1aM7W4ctQ6khEwEIx-JEd2DUJoVznKfVO4Cuhmw814Ps',
+  LEADS_SHEET_NAME: 'Sheet1',
+  LEAD_COLS: {
+    NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, MAKE: 4, REMARK: 5,
+    STAFF_NAME: 6, STATUS: 7, REVIEW: 8, DATE: 9,
+    SENT_TIME: 10, DONE_TIME: 11, COUNT_DIALER: 12
+  }
+};
 
-// ============================================
-// MONGODB SCHEMAS
-// ============================================
-const StaffSchema = new mongoose.Schema({
-  userName: { type: String, required: true, unique: true, index: true },
-  name: String,
-  staffNo: String,
-  activeStatus: { type: String, default: 'ACTIVE' },
-  email: String,
-  gender: String,
-  chatId: { type: String, index: true },
-  tLeads: { type: Number, default: 0 },
-  tCalls: { type: Number, default: 0 },
-  tWa: { type: Number, default: 0 },
-  tSkip: { type: Number, default: 0 },
-  oLeads: { type: Number, default: 0 },
-  oCalls: { type: Number, default: 0 },
-  oWa: { type: Number, default: 0 },
-  oSkip: { type: Number, default: 0 },
-  lastDate: { type: String, default: '' }
+// ==================== MONGODB ====================
+const mongoUri = process.env.MONGODB_URI;
+let db, staffsCollection, remindersCollection, tempLocksCollection;
+
+async function connectMongo() {
+  const client = new MongoClient(mongoUri);
+  await client.connect();
+  db = client.db(process.env.DB_NAME || 'leadbot_db');
+  staffsCollection = db.collection('staffs');
+  remindersCollection = db.collection('reminders');
+  tempLocksCollection = db.collection('tempLocks');
+
+  await remindersCollection.createIndex({ fireAt: 1 });
+  await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await staffsCollection.createIndex({ userName: 1 });
+  await staffsCollection.createIndex({ chatId: 1 });
+  console.log('✅ MongoDB connected');
+}
+
+// ==================== GOOGLE SHEETS ====================
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+  scopes: ['https://www.googleapis.com/auth/spreadsheets']
 });
+const sheets = google.sheets({ version: 'v4', auth });
 
-const LeadSchema = new mongoose.Schema({
-  name: String,
-  mobile: String,
-  regNo: { type: String, required: true, unique: true, index: true },
-  expired: Date,
-  make: String,
-  remark: String,
-  staffName: { type: String, default: '', index: true },
-  status: { type: String, default: '', index: true },
-  review: { type: String, default: '' },
-  date: Date,
-  sentTime: Date,
-  doneTime: Date,
-  countDialer: { type: Number, default: 0 },
-  coolingUntil: { type: Date, default: null },
-  lockedBy: { type: String, default: '' },
-  lockedAt: { type: Date, default: null },
-  lastMessageId: { type: Number, default: null }
-});
+// ==================== HELPERS ====================
+function safeStr(val) {
+  return val == null ? '' : String(val).trim();
+}
 
-const ReminderSchema = new mongoose.Schema({
-  chatId: String,
-  regNo: String,
-  staffName: String,
-  reviewText: String,
-  reminderType: String,
-  fireAt: { type: Date, index: true },
-  fired: { type: Boolean, default: false }
-});
+function formatDateTime(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
-const Staff = mongoose.model('Staff', StaffSchema);
-const Lead = mongoose.model('Lead', LeadSchema);
-const Reminder = mongoose.model('Reminder', ReminderSchema);
+function parseSheetDate(val) {
+  if (!val) return new Date(9999, 0, 1);
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const m = String(val).match(/(\d{1,2})-([a-zA-Z]{3})-(\d{4})/);
+  if (m) {
+    const d = new Date(parseInt(m[3]), months[m[2].toLowerCase()], parseInt(m[1]));
+    return isNaN(d) ? new Date(9999, 0, 1) : d;
+  }
+  const d = new Date(val);
+  return isNaN(d) ? new Date(9999, 0, 1) : d;
+}
 
-// ============================================
-// TELEGRAM HELPERS
-// ============================================
-async function sendMessage(chatId, text, buttons = null, removeKb = false) {
+function fuzzyHas(text, keyword, minChars = 3) {
+  const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  const k = keyword.toLowerCase();
+  if (t.includes(' ' + k + ' ') || t.includes(k)) return true;
+  if (k.length >= minChars) {
+    const prefix = k.substring(0, minChars);
+    for (const w of t.split(/\s+/)) {
+      const clean = w.replace(/[^a-z0-9\u0900-\u097F]/g, '');
+      if (clean.length >= minChars && clean.substring(0, minChars) === prefix) return true;
+      if (clean.length >= minChars && (clean.includes(k) || (k.length >= minChars && k.includes(clean)))) return true;
+    }
+  }
+  return false;
+}
+
+function fuzzyAny(text, keywords, minChars) {
+  return keywords.some(kw => fuzzyHas(text, kw, minChars));
+}
+
+// Deduplication
+const processedMessages = new Map();
+function isDuplicate(key) {
+  const now = Date.now();
+  if (processedMessages.has(key)) {
+    if (now - processedMessages.get(key) < 30000) return true;
+  }
+  processedMessages.set(key, now);
+  for (const [k, v] of processedMessages) {
+    if (now - v > 60000) processedMessages.delete(k);
+  }
+  return false;
+}
+
+// Rate limiting
+const rateLimits = new Map();
+function isRateLimited(userId) {
+  const now = Date.now();
+  const last = rateLimits.get(userId);
+  if (last && now - last < 1500) return true;
+  rateLimits.set(userId, now);
+  return false;
+}
+
+// In-memory state (lost on restart — acceptable)
+const pendingReviews = new Map();
+const userLeads = new Map();
+const leadUsers = new Map();
+
+// ==================== SHEET HELPERS ====================
+async function getSheetData() {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: CONFIG.SHEET_ID,
+    range: `${CONFIG.LEADS_SHEET_NAME}!A1:M10000`
+  });
+  return res.data.values || [];
+}
+
+async function getRowMap() {
+  const data = await getSheetData();
+  const map = {};
+  for (let i = 1; i < data.length; i++) {
+    const rn = safeStr(data[i][CONFIG.LEAD_COLS.REG_NO]);
+    if (rn) map[rn] = i + 1;
+  }
+  return map;
+}
+
+async function getLeadRowData(rowNum) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: CONFIG.SHEET_ID,
+    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:M${rowNum}`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  return (res.data.values?.[0] || []).map(safeStr);
+}
+
+async function updateLeadCells(rowNum, updates) {
+  const data = updates.map(u => ({
+    range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + u.col)}${rowNum}`,
+    values: [[u.value]]
+  }));
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: CONFIG.SHEET_ID,
+    resource: { valueInputOption: 'USER_ENTERED', data }
+  });
+}
+
+// ==================== TELEGRAM API ====================
+async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = false) {
   const payload = {
     chat_id: chatId,
     text: text,
     parse_mode: 'Markdown',
     disable_web_page_preview: true
   };
-  if (removeKb) {
-    payload.reply_markup = JSON.stringify({ remove_keyboard: true });
-  } else if (buttons) {
-    payload.reply_markup = JSON.stringify(buttons);
+  if (removeKeyboard) payload.reply_markup = JSON.stringify({ remove_keyboard: true });
+  else if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload);
+  } catch (e) {
+    console.error('sendMessage error:', e.response?.data?.description || e.message);
   }
-  try {
-    await axios.post(`${API_URL}/sendMessage`, payload, { timeout: 5000 });
-  } catch (e) {}
 }
 
-async function editMessage(chatId, messageId, text, buttons = null) {
-  const payload = {
-    chat_id: chatId,
-    message_id: messageId,
-    text: text,
-    parse_mode: 'Markdown'
-  };
-  if (buttons) payload.reply_markup = JSON.stringify(buttons);
+async function editMessage(chatId, messageId, text, replyMarkup = null) {
+  const payload = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'Markdown' };
+  if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
   try {
-    await axios.post(`${API_URL}/editMessageText`, payload, { timeout: 5000 });
-  } catch (e) {}
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload);
+  } catch (e) {
+    console.error('editMessage error:', e.response?.data?.description || e.message);
+  }
 }
 
-async function answerCallback(queryId) {
+async function answerCallbackQuery(queryId) {
   try {
-    await axios.post(`${API_URL}/answerCallbackQuery`, { callback_query_id: queryId }, { timeout: 3000 });
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId });
   } catch (e) {}
 }
 
 async function deleteMessage(chatId, messageId) {
   try {
-    await axios.post(`${API_URL}/deleteMessage`, { chat_id: chatId, message_id: messageId }, { timeout: 3000 });
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId });
   } catch (e) {}
 }
 
-// ============================================
-// BUTTONS
-// ============================================
-const mainButtons = {
-  keyboard: [[{ text: '▶️ START LEAD' }], [{ text: '📊 MY STATUS' }]],
-  resize_keyboard: true,
-  one_time_keyboard: false
-};
+// ==================== BUTTONS & MESSAGES ====================
+function getMainButtons() {
+  return { keyboard: [[{ text: '▶️ START LEAD' }], [{ text: '📊 MY STATUS' }]], resize_keyboard: true, one_time_keyboard: false };
+}
 
-function leadButtons(regNo, showSkip) {
-  const btns = [
+function getLeadButtons(regNo, showSkip) {
+  const b = [
     [{ text: '📞 CALL', callback_data: `CALL_${regNo}` }, { text: '💬 WHATSAPP', callback_data: `WHATSAPP_${regNo}` }],
     [{ text: '🔍 REVIEW', callback_data: `REVIEW_${regNo}` }, { text: '✅ DONE', callback_data: `DONE_${regNo}` }]
   ];
-  if (showSkip) btns.push([{ text: '⏭️ SKIP', callback_data: `SKIP_${regNo}` }]);
-  return { inline_keyboard: btns };
+  if (showSkip) b.push([{ text: '⏭️ SKIP', callback_data: `SKIP_${regNo}` }]);
+  return { inline_keyboard: b };
 }
 
-function reviewButtons(regNo) {
+function getReviewButtons(regNo) {
   return {
     inline_keyboard: [
       [{ text: '📞 RINGING', callback_data: `RINGING_${regNo}` }, { text: '❌ NOT CONNECTED', callback_data: `NOTCONN_${regNo}` }],
@@ -143,443 +217,685 @@ function reviewButtons(regNo) {
   };
 }
 
-// ============================================
-// MESSAGE BUILDERS
-// ============================================
-function buildLeadMsg(lead) {
-  const ds = lead.expired ? lead.expired.toLocaleDateString('en-GB') : '';
-  const re = (lead.remark || '').toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
-  let msg = `📋 *NEW LEAD*\n\n👤 ${lead.name || ''}\n📱 ${lead.mobile || ''}\n🚗 ${lead.regNo || ''}\n📅 ${ds}\n${re}\n🏭 ${lead.make || ''}\n`;
-  if (lead.staffName) msg += `👨‍💼 ${lead.staffName}\n`;
-  if (lead.status) msg += `📊 ${lead.status}\n`;
-  if (lead.review && lead.review !== 'PENDING_OTHER') msg += `📝 ${lead.review}\n`;
-  if (lead.countDialer > 0) msg += `📞 Count: ${lead.countDialer}\n`;
+function getLeadMsg(rowData) {
+  const nm = rowData[CONFIG.LEAD_COLS.NAME];
+  const mb = rowData[CONFIG.LEAD_COLS.MOBILE];
+  const rn = rowData[CONFIG.LEAD_COLS.REG_NO];
+  const d2 = rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE];
+  const rm = rowData[CONFIG.LEAD_COLS.REMARK];
+  const mk = rowData[CONFIG.LEAD_COLS.MAKE];
+  const sa = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
+  const st = safeStr(rowData[CONFIG.LEAD_COLS.STATUS]);
+
+  let ds = safeStr(d2);
+  const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
+
+  let msg = `📋 *NEW LEAD*\n\n👤 *Name:* ${nm || ''}\n📱 *Mobile:* ${mb || ''}\n🚗 *Reg:* ${rn || ''}\n📅 *Date:* ${ds}\n${re}\n🏭 *Make:* ${mk || ''}\n`;
+  if (sa) msg += `👨‍💼 *Staff:* ${sa}\n`;
+  if (st) msg += `📊 *Status:* ${st}\n`;
   msg += '\nChoose action:';
   return msg;
 }
 
-function buildWelcome(staff) {
-  const em = staff.activeStatus === 'ACTIVE' ? '🟢' : '🔴';
-  return `👋 *${staff.name}*\n🆔 \`${staff.userName}\`\n${em} *${staff.activeStatus}*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Permanent Lock\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE`;
+// ==================== SMART REMINDER ====================
+function isFinalResponse(text) {
+  const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  const cb = ['baad me','baadme','bad me','badme','baad mein','bad mein','baad m','bad m','baadmein','baad mai','bad mai','baad me kro','bad me kro'];
+  if (fuzzyAny(text, cb, 4)) return false;
+
+  if (/\b(?:already|alredy)\b/.test(t) && /\b(?:renew|renewed|done|taken|purchase|bought)\b/.test(t)) return true;
+  if (/\b(?:renew|policy|insurance)\b/.test(t) && /\b(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)\b/.test(t)) return true;
+  if (/\b(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))\b/.test(t)) return true;
+  if (/\b(?:ho\s*(?:gaya|gya|chuka))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:le\s*(?:liya|liye|li))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:pahle\s*se|pehle\s*se)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not|never)\b/.test(t) && /\b(?:record|call|disturb|phone)\b/.test(t)) return true;
+  if (/\b(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)\b/.test(t)) return true;
+  if (/\b(?:sell|sold|sale|bech|beche|becha)\b/.test(t) && /\b(?:car|gadi|gaadi|vehicle)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:bech|sell|sale|beche|becha)\b/.test(t) && /\b(?:di|diya|de|kar|chuka|gayi)\b/.test(t)) return true;
+  if (/\b(?:sold|sale)\b/.test(t) && /\b(?:long\s*time|1\s*year|2\s*year|months?\s*ago)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:nahi|nhi|na|nai)\b/.test(t) && /\b(?:hai|h|rahi|available)\b/.test(t)) return true;
+  if (/\b(?:nahi|nhi|na|nahin|nai)\b/.test(t) && /\b(?:chahiye|lena|leni|jarurat|zarurat)\b/.test(t)) return true;
+  if (/\b(?:not|no)\b/.test(t) && /\b(?:interested|need|want|require|required)\b/.test(t)) return true;
+  if (/\b(?:mana|manaa)\b/.test(t) && /\b(?:kar|kar\s*di|diya|kiya)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not)\b/.test(t) && /\b(?:want|need|require)\b/.test(t)) return true;
+  if (/\b(?:block|blacklist)\b/.test(t) && /\b(?:kar|karo|kro|kardo)\b/.test(t)) return true;
+  if (/\b(?:aage|aagey|age|aagay)\b/.test(t) && /\b(?:se|say)\b/.test(t) && /\b(?:mat|na)\b/.test(t) && /\b(?:karna|karo|karein)\b/.test(t)) return true;
+  if (/\b(?:band|bandh|bnd)\b/.test(t) && /\b(?:kardo|kar\s*do|kar\s*de)\b/.test(t)) return true;
+  if (/\b(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)\b/.test(t) && /\b(?:number|no|mobile|phone)\b/.test(t)) return true;
+  if (/\b(?:number|mobile|phone)\b/.test(t) && /\b(?:invalid|wrong|fake|not\s*working)\b/.test(t)) return true;
+  if (/\b(?:switch\s*off|switched\s*off)\b/.test(t) && /\b(?:permanent|always|forever|hai|h)\b/.test(t)) return true;
+  if (/\b(?:does\s*not|don't)\b/.test(t) && /\b(?:exist|live|work)\b/.test(t)) return true;
+  if (/\b(?:not\s*in\s*use|band|bandh)\b/.test(t)) return true;
+  return false;
 }
 
-// ============================================
-// SMART REMINDER
-// ============================================
-function detectReminder(text) {
+function detectReminder(text, chatId, staffName, regNo, leadData) {
   const now = new Date();
-  const lower = text.toLowerCase();
-  
-  const callbackWords = ['baad me','baadme','bad me','badme','baad mein','bad mein'];
-  if (callbackWords.some(w => lower.includes(w))) return null;
-  
-  const finalRegex = [
-    /\b(?:already|alredy|alrady)\b.*\b(?:renew|renewal|done|purchased)\b/i,
-    /\b(?:renew|renewal)\b.*\b(?:ho\s*(?:gaya|gya|chuka)|done|complete)\b/i,
-    /\b(?:dont|don't|do not|never)\b.*\b(?:call|disturb|record)\b/i,
-    /\b(?:nahi|nhi|na|nahin)\b.*\b(?:lenaa|lena|chahiye)\b/i,
-    /\b(?:sold|sale)\b.*\b(?:long\s*time|months?\s*ago)\b/i,
-    /\b(?:block|blacklist)\b/i,
-    /\b(?:not\s*in\s*use|band|bandh)\b/i
-  ];
-  if (finalRegex.some(rx => rx.test(lower))) {
-    return { type: '🏁 FINAL RESPONSE — No callback needed', isFinal: true };
+  const lt = text.toLowerCase().trim();
+  if (isFinalResponse(text)) return { time: null, type: '🏁 FINAL RESPONSE — No callback needed', isFinal: true };
+
+  let rt = null, type = '';
+
+  const minM = lt.match(/(?:call\s*back\s*|callback\s*|call\s*)(\d{1,2})\s*(?:min|minute|minutes|minat|mnt|minut|minuts)/);
+  if (minM && !rt) { rt = new Date(now.getTime() + parseInt(minM[1]) * 60000); type = `⏰ Call back in ${minM[1]} minute(s)`; }
+
+  const kalM = lt.match(/(?:kal|kl|कल)\s*(?:subah|morning|sham|evening|raat|night|din|दिन)?\s*(\d{1,2})\s*(?:baje|baj|baje|o'?clock|am|pm)?/);
+  if (kalM && !rt) { rt = new Date(now.getTime() + 86400000); rt.setHours(parseInt(kalM[1]), 0, 0, 0); type = `📅 Tomorrow at ${kalM[1]}:00 AM`; }
+
+  if (!rt && /(?:next\s*week|nest\s*week|agla\s*hafta|agla\s*week|agale\s*hafte)/.test(lt)) { rt = new Date(now.getTime() + 7 * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 Next week at 10:00 AM'; }
+  if (!rt && /(?:next\s*month|agla\s*mahina|agla\s*month|agale\s*mahine|agla\s*mhina)/.test(lt)) { rt = new Date(now.getTime() + 30 * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 Next month at 10:00 AM'; }
+
+  const afterM = lt.match(/(?:after|baad|ke\s*baad|ke\s*bad)\s*(\d{1,2})\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/);
+  if (afterM && !rt) {
+    const mn = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const ms = lt.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/)[1];
+    rt = new Date(now.getFullYear(), mn.indexOf(ms), parseInt(afterM[1]) + 1, 10, 0, 0);
+    if (rt < now) rt.setFullYear(rt.getFullYear() + 1);
+    type = `📅 After ${afterM[1]} ${ms} at 10:00 AM`;
   }
 
-  let time = null, type = '';
-  
-  const minMatch = lower.match(/(?:call\s*back\s*|callback\s*|call\s*)(\d{1,2})\s*(?:min|minute|minutes|minat|mnt|minut|minuts)/i);
-  if (minMatch) { time = new Date(now.getTime() + parseInt(minMatch[1])*60000); type = `⏰ Call back in ${minMatch[1]} min(s)`; }
-  
-  if (!time && /(?:next\s*week|nest\s*week|agla\s*hafta|agla\s*week|agale\s*hafte)/i.test(lower)) {
-    time = new Date(now.getTime() + 7*24*60*60*1000); time.setHours(10,0,0,0); type = '📅 Next week at 10:00 AM';
+  const dateM = lt.match(/(\d{1,2})\s*(?:को|ko|co)/);
+  if (dateM && !rt) {
+    const td = parseInt(dateM[1]), tday = now.getDate();
+    let tm = now.getMonth(), ty = now.getFullYear();
+    if (td < tday) { tm++; if (tm > 11) { tm = 0; ty++; } }
+    rt = new Date(ty, tm, td, 10, 0, 0);
+    if (rt.getDate() !== td) rt = new Date(ty, tm + 1, 0, 10, 0, 0);
+    if (rt < now) { tm++; if (tm > 11) { tm = 0; ty++; } rt = new Date(ty, tm, td, 10, 0, 0); }
+    type = `📅 Date: ${td}-${tm + 1}-${ty}`;
   }
-  
-  if (!time && /(?:next\s*month|agla\s*mahina|agla\s*month|agale\s*mahine)/i.test(lower)) {
-    time = new Date(now.getTime() + 30*24*60*60*1000); time.setHours(10,0,0,0); type = '📅 Next month at 10:00 AM';
+
+  if (!rt) {
+    const rel = [{ w: ['aaj','aj','आज'], o: 0 }, { w: ['kal','kl','कल'], o: 1 }, { w: ['parso','paraso','perso','परसों','परसो'], o: 2 }];
+    for (const r of rel) {
+      if (r.w.some(x => lt.includes(x))) { rt = new Date(now.getTime() + r.o * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 ${r.w[0]} at 10:00 AM`; break; }
+    }
   }
-  
-  const kalMatch = lower.match(/(?:kal|kl|कल)\s*(?:subah|morning|sham|evening|raat|night|din|दिन)?\s*(\d{1,2})/i);
-  if (!time && kalMatch) {
-    time = new Date(now.getTime() + 24*60*60*1000); time.setHours(parseInt(kalMatch[1]),0,0,0); type = `📅 Tomorrow at ${kalMatch[1]}:00`;
-  }
-  
-  const weekDays = [
-    {names:['sunday','sun'],code:0},{names:['monday','mon'],code:1},{names:['tuesday','tue','tues'],code:2},
-    {names:['wednesday','wed'],code:3},{names:['thursday','thu','thurs'],code:4},{names:['friday','fri'],code:5},{names:['saturday','sat'],code:6}
-  ];
-  if (!time) {
-    for (const wd of weekDays) {
-      if (wd.names.some(n => lower.includes(n))) {
-        let daysUntil = wd.code - now.getDay();
-        if (daysUntil <= 0) daysUntil += 7;
-        time = new Date(now.getTime() + daysUntil*24*60*60*1000); time.setHours(10,0,0,0);
-        type = `📅 Next ${wd.names[0]}`; break;
+
+  if (!rt) {
+    const wd = [
+      { n: ['sunday','sundy','sun','san','संडे','sanday'], c: 0 }, { n: ['monday','mondy','mon','mn','मंडे','manday'], c: 1 },
+      { n: ['tuesday','tues','tue','tyu','ट्यूसडे','tusday'], c: 2 }, { n: ['wednesday','wed','wd','वेडनेसडे','wednsday'], c: 3 },
+      { n: ['thursday','thurs','thu','thur','थर्सडे','thrusday'], c: 4 }, { n: ['friday','fri','fr','फ्राइडे','fridy'], c: 5 },
+      { n: ['saturday','saterday','sat','sta','सैटरडे','saturdy'], c: 6 }
+    ];
+    for (const w of wd) {
+      if (w.n.some(n => lt.includes(n))) {
+        let du = w.c - now.getDay();
+        if (du <= 0) du += 7;
+        rt = new Date(now.getTime() + du * 86400000); rt.setHours(10, 0, 0, 0);
+        type = `📅 Next ${w.n[0]} at 10:00 AM`; break;
       }
     }
   }
-  
-  if (!time) {
-    const numMatch = lower.match(/(\d{1,2})/);
-    if (numMatch) {
-      const num = parseInt(numMatch[1]);
-      if (/(?:hour|hr|ghanta|घंटे)/.test(lower)) { time = new Date(now.getTime() + num*60*60*1000); type = `⏰ After ${num} hour(s)`; }
-      else if (/(?:minute|min|minat)/.test(lower)) { time = new Date(now.getTime() + num*60*1000); type = `⏰ After ${num} min(s)`; }
-      else if (/(?:day|din|दिन)/.test(lower)) { time = new Date(now.getTime() + num*24*60*60*1000); time.setHours(10,0,0,0); type = `📅 After ${num} day(s)`; }
+
+  if (!rt) {
+    const nm = lt.match(/(\d{1,2})/);
+    if (nm) {
+      const n = parseInt(nm[1]);
+      const hw = ['hour','hours','hr','hrs','ghanta','ghante','ghnte','ghnta','घंटे','घंटा','ghnt','ghante'];
+      const mw = ['minute','minutes','min','mins','minat','मिनट','mint','mnt','minuts'];
+      const dw = ['day','days','din','dino','दिन','dinn','deenn'];
+      const ww = ['week','weeks','hafta','hafte','हफ्ता','हफ्ते','wek','weaks','haftey','hafte'];
+      if (hw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 3600000); type = `⏰ After ${n} hour(s)`; }
+      else if (mw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 60000); type = `⏰ After ${n} minute(s)`; }
+      else if (dw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 After ${n} day(s)`; }
+      else if (ww.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 7 * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 After ${n} week(s)`; }
     }
   }
-  
-  if (time) {
-    if (time < now) time = new Date(time.getTime() + 24*60*60*1000);
-    return { time, type, isFinal: false };
+
+  if (!rt) {
+    const rw = ['disconnect','disconect','cut','not reachable','unreachable','switch off','band','बंद','नेटवर्क','कट गया','kat gaya','network nahi','no network'];
+    if (rw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + 1800000); type = '🔄 Retry after 30 minutes'; }
+  }
+
+  if (!rt) {
+    const gen = ['call back','callback','baad mein','बाद में','baadme','badme','baad me','bad me','badmein'];
+    if (gen.some(w => lt.includes(w))) { rt = new Date(now.getTime() + 7200000); type = '⏰ Default: 2 hours'; }
+  }
+
+  if (rt) {
+    if (rt < now) rt = new Date(rt.getTime() + 86400000);
+    return {
+      time: rt, type, isFinal: false,
+      data: {
+        chatId, regNo, staffName, reviewText: text,
+        customerName: safeStr(leadData[CONFIG.LEAD_COLS.NAME]),
+        customerMobile: safeStr(leadData[CONFIG.LEAD_COLS.MOBILE]),
+        reminderType: type, fireAt: rt, fired: false
+      }
+    };
   }
   return null;
 }
 
-// ============================================
-// COUNTER
-// ============================================
-async function incrementCounter(staff, type) {
-  const today = new Date().toLocaleDateString('en-GB');
-  if (staff.lastDate !== today) {
-    staff.tLeads = staff.tCalls = staff.tWa = staff.tSkip = 0;
-    staff.lastDate = today;
-  }
-  if (type === 'LEADS') { staff.tLeads++; staff.oLeads++; }
-  else if (type === 'CALLS') { staff.tCalls++; staff.oCalls++; }
-  else if (type === 'WA') { staff.tWa++; staff.oWa++; }
-  else if (type === 'SKIP') { staff.tSkip++; staff.oSkip++; }
-  await staff.save();
+// ==================== COOLING ====================
+async function isInCooling(regNo) {
+  const lock = await tempLocksCollection.findOne({ regNo });
+  if (!lock) return false;
+  if (lock.expiresAt < new Date()) { await tempLocksCollection.deleteOne({ regNo }); return false; }
+  return true;
 }
 
-// ============================================
-// WEBHOOK HANDLER
-// ============================================
-app.post('/webhook', async (req, res) => {
-  res.sendStatus(200);
-  
-  const update = req.body;
+async function setCooling(regNo, hours = 3) {
+  await tempLocksCollection.updateOne({ regNo }, { $set: { regNo, expiresAt: new Date(Date.now() + hours * 3600000) } }, { upsert: true });
+}
+
+async function clearCooling(regNo) {
+  await tempLocksCollection.deleteOne({ regNo });
+}
+
+// ==================== HANDLERS ====================
+async function processUpdate(update) {
   if (!update.message && !update.callback_query) return;
-  
-  const chatId = String(update.message?.chat?.id || update.callback_query?.message?.chat?.id);
-  const userId = String(update.message?.from?.id || update.callback_query?.from?.id);
+  const chatId = safeStr(update.message?.chat?.id || update.callback_query?.message?.chat?.id);
+  const userId = safeStr(update.message?.from?.id || update.callback_query?.from?.id);
   if (!chatId || !userId) return;
-  
+
+  let dupKey;
+  if (update.callback_query) dupKey = `d_${userId}_${update.callback_query.message.message_id}_${update.callback_query.data}`;
+  else dupKey = `d_${userId}_${update.message.message_id}`;
+  if (isDuplicate(dupKey)) return;
+  if (isRateLimited(userId)) return;
+
   try {
-    if (update.callback_query) {
-      await handleCallback(update.callback_query, chatId, userId);
-    } else if (update.message?.text) {
-      await handleText(update.message.text.trim(), chatId, userId);
-    }
+    if (update.callback_query) await handleCallback(update.callback_query, chatId, userId);
+    else if (update.message?.text) await handleText(update.message.text.trim(), chatId, userId);
   } catch (err) {
-    console.error('Handler error:', err.message);
+    console.error('processUpdate ERROR:', err);
+    await sendMessage(chatId, '⚠️ Error: ' + err.message, getMainButtons());
   }
-});
+}
 
 async function handleText(text, chatId, userId) {
-  if (/^MIS-/i.test(text)) {
-    const staff = await Staff.findOne({ userName: text.toUpperCase() });
-    if (!staff) { await sendMessage(chatId, '❌ USER NAME not found!', null, true); return; }
-    if (staff.activeStatus !== 'ACTIVE') { await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', null, true); return; }
-    staff.chatId = chatId;
-    await staff.save();
-    await sendMessage(chatId, `✅ Switched to: ${staff.name}\n\n🆔 ID: ${text}\n\nClick ▶️ START LEAD`, mainButtons);
-    return;
+  const pending = pendingReviews.get(chatId);
+
+  if (pending) {
+    if (text === '/cancel') {
+      pendingReviews.delete(chatId);
+      await sendMessage(chatId, '❌ Review cancelled.\n🔒 Lead locked.', getMainButtons());
+      return;
+    }
+    if (text.startsWith('/') || text === '▶️ START LEAD' || text === '📊 MY STATUS') {
+      pendingReviews.delete(chatId);
+    } else {
+      const { regNo, messageId } = pending;
+      const rowMap = await getRowMap();
+      const rowNum = rowMap[regNo];
+      if (!rowNum) {
+        pendingReviews.delete(chatId);
+        await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons());
+        return;
+      }
+      const staff = await staffsCollection.findOne({ chatId });
+      const sn = staff ? staff.name : '';
+
+      await updateLeadCells(rowNum, [
+        { col: CONFIG.LEAD_COLS.REVIEW, value: text },
+        { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sn }
+      ]);
+
+      const freshRow = await getLeadRowData(rowNum);
+      const reminder = detectReminder(text, chatId, sn, regNo, freshRow);
+
+      if (messageId) {
+        await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false));
+      }
+
+      if (reminder && reminder.isFinal) {
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
+      } else if (reminder) {
+        const tStr = reminder.time.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
+        await remindersCollection.insertOne(reminder.data);
+      } else {
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n⚠️ Click DONE to complete!`, getMainButtons());
+      }
+      pendingReviews.delete(chatId);
+      return;
+    }
   }
 
-  const staff = await Staff.findOne({ chatId });
-  
+  let staff = await staffsCollection.findOne({ chatId });
+
   if (text === '/start') {
-    if (staff) await sendMessage(chatId, buildWelcome(staff), mainButtons);
+    if (staff) await sendWelcome(chatId, staff);
     else await sendMessage(chatId, '👋 Welcome!\n\nSend USER NAME to login.\nExample: MIS-SHAIK-1843', null, true);
     return;
   }
 
-  if (!staff) {
-    await sendMessage(chatId, '❌ Send your USER NAME first.\nExample: MIS-SHAIK-1843', null, true);
+  const loginStaff = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
+  if (loginStaff) {
+    if (safeStr(loginStaff.activeStatus).toUpperCase() !== 'ACTIVE') {
+      await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', null, true);
+      return;
+    }
+    await staffsCollection.updateOne({ chatId }, { $set: { chatId: '' } });
+    await staffsCollection.updateOne({ _id: loginStaff._id }, { $set: { chatId } });
+    const updated = await staffsCollection.findOne({ _id: loginStaff._id });
+    const saved = updated.chatId === chatId;
+    await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
     return;
   }
-  
-  if (staff.activeStatus !== 'ACTIVE') {
+
+  if (!staff) {
+    await sendMessage(chatId, '❌ USER NAME not found!', null, true);
+    return;
+  }
+  if (safeStr(staff.activeStatus).toUpperCase() !== 'ACTIVE') {
     await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', null, true);
     return;
   }
 
-  const pending = await Lead.findOne({ lockedBy: chatId, review: 'PENDING_OTHER' });
-  if (pending && !text.startsWith('/') && text !== '▶️ START LEAD' && text !== '📊 MY STATUS') {
-    if (text === '/cancel') {
-      pending.review = '';
-      await pending.save();
-      await sendMessage(chatId, '❌ Review cancelled.\n🔒 Lead locked.', mainButtons);
-      return;
-    }
-    
-    const reminder = detectReminder(text);
-    pending.review = text;
-    pending.staffName = staff.name;
-    await pending.save();
-    
-    if (pending.lastMessageId) {
-      await editMessage(chatId, pending.lastMessageId, buildLeadMsg(pending) + '\n\n✏️ *Review:* ' + text, leadButtons(pending.regNo, false));
-    }
-    
-    if (reminder && !reminder.isFinal) {
-      await Reminder.create({
-        chatId, regNo: pending.regNo, staffName: staff.name,
-        reviewText: text, reminderType: reminder.type, fireAt: reminder.time
-      });
-      const tStr = reminder.time.toLocaleString('en-GB');
-      await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${staff.name}\n\n${reminder.type}\n⏰ *${tStr}*\n⚠️ Click DONE!`, mainButtons);
-    } else if (reminder && reminder.isFinal) {
-      await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${staff.name}\n\n${reminder.type}\n\n⚠️ *Click DONE!*`, mainButtons);
-    } else {
-      await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${staff.name}\n\n⚠️ Click DONE!`, mainButtons);
-    }
-    return;
-  }
+  const sName = staff.name;
+  if (text === '/next' || text === '▶️ START LEAD') await sendNext(chatId, sName);
+  else if (text === '/status' || text === '📊 MY STATUS') await sendReport(chatId, sName);
+  else await sendWelcome(chatId, staff);
+}
 
-  if (text === '/next' || text === '▶️ START LEAD') {
-    await sendNext(chatId, staff);
-  } else if (text === '/status' || text === '📊 MY STATUS') {
-    await sendReport(chatId, staff);
-  } else {
-    await sendMessage(chatId, buildWelcome(staff), mainButtons);
-  }
+async function sendWelcome(chatId, staff) {
+  const sn = safeStr(staff.name);
+  const un = safeStr(staff.userName);
+  const st = safeStr(staff.activeStatus);
+  const em = st.toUpperCase() === 'ACTIVE' ? '🟢' : '🔴';
+  const msg = `👋 *${sn}*\n🆔 \`${un}\`\n${em} *${st}*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 3Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Permanent Lock\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE`;
+  await sendMessage(chatId, msg, getMainButtons());
 }
 
 async function handleCallback(cq, chatId, userId) {
-  await answerCallback(cq.id);
-  const data = cq.data;
-  const mid = cq.message.message_id;
-  const act = data.split('_')[0];
-  const regNo = data.substring(data.indexOf('_') + 1);
-  
-  const staff = await Staff.findOne({ chatId });
-  if (!staff) { await sendMessage(chatId, '❌ Session expired. Send /start', mainButtons); return; }
-  if (staff.activeStatus !== 'ACTIVE') { await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', mainButtons); return; }
-  
-  const lead = await Lead.findOne({ regNo });
-  if (!lead) { await sendMessage(chatId, '❌ Lead not found.', mainButtons); return; }
-  
-  if (lead.coolingUntil && lead.coolingUntil > new Date() && lead.status !== 'DONE') {
-    await sendMessage(chatId, '⏱️ Lead expired (2 hours).\nClick ▶️ START LEAD for new.', mainButtons);
-    return;
-  }
-  
-  if (lead.staffName && lead.staffName.toUpperCase() !== staff.name.toUpperCase()) {
-    lead.staffName = staff.name;
-  }
-  
-  const now = new Date();
-  const tStr = now.toLocaleString('en-GB');
-
-  switch(act) {
-    case 'CALL': {
-      lead.countDialer++;
-      await lead.save();
-      await incrementCounter(staff, 'CALLS');
-      let mDig = (lead.mobile || '').replace(/\D/g, '');
-      if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.slice(2);
-      await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${lead.name || ''}\n📱 +91${mDig}\n🔄 Count: ${lead.countDialer}\n\n👆 Tap to dial`, mainButtons);
-      break;
-    }
-    
-    case 'WHATSAPP': {
-      await incrementCounter(staff, 'WA');
-      let wDig = (lead.mobile || '').replace(/\D/g, '');
-      if (wDig.startsWith('91') && wDig.length > 10) wDig = wDig.slice(2);
-      const wDs = lead.expired ? lead.expired.toLocaleDateString('en-GB') : '';
-      const wMsg = `🚗 Hello ${lead.name || ''}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${lead.regNo}* ka insurance *${wDs}* ko expire ho raha hai.\n\n👉 Best price me renew?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Companies\n\nReply: YES / CALL`;
-      const wLink = `https://wa.me/91${wDig}?text=${encodeURIComponent(wMsg)}`;
-      await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${lead.name || ''}\n📱 +${wDig}\n🚗 ${lead.regNo}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
-      break;
-    }
-    
-    case 'REVIEW':
-      await editMessage(chatId, mid, buildLeadMsg(lead) + '\n\n📝 *Select Review:*', reviewButtons(regNo));
-      break;
-    
-    case 'RINGING':
-    case 'NOTCONN':
-    case 'OUTAREA':
-    case 'BUSY': {
-      const map = { RINGING: 'RINGING', NOTCONN: 'NOT CONNECTED', OUTAREA: 'OUT OF AREA', BUSY: 'BUSY' };
-      const rv = map[act];
-      lead.review = rv;
-      lead.staffName = staff.name;
-      lead.coolingUntil = new Date(Date.now() + COOLING_MS);
-      lead.lockedBy = chatId;
-      lead.lockedAt = now;
-      await lead.save();
-      await editMessage(chatId, mid, buildLeadMsg(lead) + '\n\n⚠️ ' + rv, leadButtons(regNo, false));
-      await sendMessage(chatId, `✅ ${rv}\n🔒 ${staff.name}\n⏱️ 2 HOURS to DONE!`, mainButtons);
-      break;
-    }
-    
-    case 'OTHER': {
-      lead.staffName = staff.name;
-      lead.review = 'PENDING_OTHER';
-      lead.lockedBy = chatId;
-      lead.lockedAt = now;
-      lead.lastMessageId = mid;
-      await lead.save();
-      await editMessage(chatId, mid, buildLeadMsg(lead) + '\n\n✏️ *Type review & send*\n\n💡 Examples:\n• 1 ghante baad\n• kal\n• 28 ko\n• call disconnect', null);
-      await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${staff.name}\n/cancel to cancel`, null, true);
-      break;
-    }
-    
-    case 'DONE': {
-      if (!lead.review || lead.review === 'PENDING_OTHER') {
-        await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', mainButtons);
-        return;
-      }
-      const tempReviews = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
-      const isTemp = tempReviews.includes(lead.review.toUpperCase());
-      
-      lead.status = 'DONE';
-      lead.doneTime = now;
-      lead.lockedBy = '';
-      if (isTemp) lead.coolingUntil = new Date(Date.now() + COOLING_MS);
-      await lead.save();
-      
-      if (isTemp) {
-        await deleteMessage(chatId, mid);
-        await sendMessage(chatId, `✅ ${lead.review} DONE!\n🔒 ${staff.name}\n⏱️ 2 HOURS cooling.\n\nClick ▶️ START LEAD`, mainButtons);
-      } else {
-        await editMessage(chatId, mid, buildLeadMsg(lead) + `\n\n✅ COMPLETED by ${staff.name} at ${tStr}`, null);
-        await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', mainButtons);
-      }
-      break;
-    }
-    
-    case 'SKIP': {
-      if (lead.review && lead.review !== 'PENDING_OTHER') {
-        await sendMessage(chatId, `❌ SKIP blocked! Review done: ${lead.review}\nClick DONE.`, mainButtons);
-        return;
-      }
-      await incrementCounter(staff, 'SKIP');
-      lead.staffName = '';
-      lead.status = '';
-      lead.review = '';
-      lead.lockedBy = '';
-      lead.coolingUntil = null;
-      await lead.save();
-      await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', mainButtons);
-      break;
-    }
-  }
-}
-
-async function sendNext(chatId, staff) {
-  const active = await Lead.findOne({ lockedBy: chatId, status: { $ne: 'DONE' } });
-  if (active) {
-    const msg = active.review && active.review !== 'PENDING_OTHER' ? '⚠️ DONE MANDATORY!' : '⚠️ Active lead! Complete it:';
-    await sendMessage(chatId, msg, mainButtons);
-    await sendMessage(chatId, buildLeadMsg(active), leadButtons(active.regNo, !active.review));
-    return;
-  }
-
-  const now = new Date();
-  const lead = await Lead.findOneAndUpdate(
-    {
-      status: { $nin: ['DONE', 'SENT'] },
-      staffName: '',
-      $or: [{ coolingUntil: null }, { coolingUntil: { $lte: now } }]
-    },
-    {
-      staffName: staff.name,
-      status: 'SENT',
-      sentTime: now,
-      lockedBy: chatId,
-      lockedAt: now
-    },
-    { sort: { remark: -1, expired: 1 }, new: true }
-  );
-
-  if (!lead) {
-    await sendMessage(chatId, '🎉 No leads available now. 🏆', mainButtons);
-    return;
-  }
-
-  await incrementCounter(staff, 'LEADS');
-  await sendMessage(chatId, buildLeadMsg(lead), leadButtons(lead.regNo, true));
-}
-
-async function sendReport(chatId, staff) {
-  const tds = new Date().toLocaleDateString('en-GB');
-  const msg = `📊 *TODAY — ${tds}*\n👤 ${staff.name}\n\n📥 Leads: ${staff.tLeads}\n📞 Calls: ${staff.tCalls}\n💬 WhatsApp: ${staff.tWa}\n⏭️ Skips: ${staff.tSkip}\n\n━━━━━━━━━━━━\n🏆 *OVERALL*\n📥 ${staff.oLeads} | 📞 ${staff.oCalls} | 💬 ${staff.oWa} | ⏭️ ${staff.oSkip}`;
-  await sendMessage(chatId, msg, mainButtons);
-}
-
-// ============================================
-// REMINDER CRON
-// ============================================
-cron.schedule('* * * * *', async () => {
-  const now = new Date();
-  const reminders = await Reminder.find({ fired: false, fireAt: { $lte: now } });
-  for (const r of reminders) {
-    const msg = `⏰ *CALLBACK REMINDER*\n\n🚗 Reg: ${r.regNo}\n📝 ${r.reviewText}\n⏱️ ${r.reminderType}\n\n👉 *Call back now!*`;
-    await sendMessage(r.chatId, msg, mainButtons);
-    r.fired = true;
-    await r.save();
-  }
-});
-
-// ============================================
-// DATA IMPORT
-// ============================================
-app.post('/import-staff', async (req, res) => {
   try {
-    await Staff.insertMany(req.body.staffList, { ordered: false });
-    res.json({ ok: true });
-  } catch (e) {
-    res.json({ ok: true, note: 'Some duplicates skipped' });
-  }
-});
+    const data = cq.data;
+    const messageId = cq.message.message_id;
+    const act = data.split('_')[0];
+    if (isDuplicate(`actlock_${chatId}_${act}`)) return;
+    await answerCallbackQuery(cq.id);
 
-app.post('/import-leads', async (req, res) => {
-  try {
-    await Lead.insertMany(req.body.leadsList, { ordered: false });
-    res.json({ ok: true });
-  } catch (e) {
-    res.json({ ok: true, note: 'Some duplicates skipped' });
-  }
-});
+    const staff = await staffsCollection.findOne({ chatId });
+    if (!staff) { await sendMessage(chatId, '❌ Session expired. Send /start', getMainButtons()); return; }
+    if (safeStr(staff.activeStatus).toUpperCase() !== 'ACTIVE') { await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', getMainButtons()); return; }
 
-app.get('/', (req, res) => res.send('✅ Lead Bot is running!'));
-async function syncStaffFromSheet() {
-  try {
-    const res = await axios.get(process.env.SHEET_API);
-    const staffList = res.data;
+    const sName = staff.name;
+    const regNo = data.substring(data.indexOf('_') + 1);
+    const rowMap = await getRowMap();
+    const rowNum = rowMap[regNo];
+    if (!rowNum) { await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons()); return; }
 
-    for (const s of staffList) {
-      if (!s.userName) continue;
-
-      await Staff.updateOne(
-        { userName: s.userName },
-        { $set: s },
-        { upsert: true }
-      );
+    if (await isRowExpired(rowNum, regNo)) {
+      await sendMessage(chatId, '⏱️ This lead expired (3 hours passed).\nClick ▶️ START LEAD for new.', getMainButtons());
+      return;
     }
 
-    console.log("✅ Staff synced from Google Sheet:", staffList.length);
+    const rowData = await getLeadRowData(rowNum);
+    const lsn = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
+    if (lsn && lsn.toUpperCase() !== sName.toUpperCase()) {
+      await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+    }
+
+    const tStr = formatDateTime();
+
+    switch (act) {
+      case 'CALL': {
+        let c = parseInt(rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || 0) + 1;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.COUNT_DIALER, value: c }]);
+        let mDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
+        if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.substring(2);
+        await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n📱 +91${mDig}\n🔄 Count: ${c}\n\n👆 Tap number to dial`, getMainButtons());
+        break;
+      }
+      case 'WHATSAPP': {
+        let wDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
+        if (wDig.startsWith('91') && wDig.length > 10) wDig = wDig.substring(2);
+        const wName = safeStr(rowData[CONFIG.LEAD_COLS.NAME]);
+        const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
+        const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
+        const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
+        const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
+        await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        break;
+      }
+      case 'REVIEW':
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n📝 *Select Review:*', getReviewButtons(regNo));
+        break;
+      case 'RINGING':
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'RINGING' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+        await setCooling(regNo, 3);
+        pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
+        await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        break;
+      case 'NOTCONN':
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'NOT CONNECTED' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+        await setCooling(regNo, 3);
+        pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
+        await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        break;
+      case 'OUTAREA':
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'OUT OF AREA' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+        await setCooling(regNo, 3);
+        pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
+        await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        break;
+      case 'BUSY':
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'BUSY' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+        await setCooling(regNo, 3);
+        pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
+        await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        break;
+      case 'OTHER':
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+        pendingReviews.set(chatId, { regNo, messageId });
+        userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n✏️ *Type review & send*\n\n💡 Examples:\n• 1 ghante baad call kro\n• kal call kro\n• 28 ko call kro\n• sunday ko call kro\n• call disconnect', null);
+        await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
+        break;
+      case 'DONE': {
+        const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+        if (!rv) { await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', getMainButtons()); return; }
+        const tempReviews = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
+        const rvUpper = rv.toUpperCase();
+        if (tempReviews.includes(rvUpper)) {
+          await updateLeadCells(rowNum, [
+            { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+            { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+            { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+            { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+          ]);
+          pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
+          await deleteMessage(chatId, messageId);
+          await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 3 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
+          return;
+        }
+        pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' }, { col: CONFIG.LEAD_COLS.DONE_TIME, value: tStr }]);
+        const updatedRow = await getLeadRowData(rowNum);
+        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${tStr}`, null);
+        await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
+        break;
+      }
+      case 'SKIP': {
+        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+        if (cr) { await sendMessage(chatId, `❌ SKIP blocked! Review done: ${cr}\nClick DONE.`, getMainButtons()); return; }
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+          { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+          { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+          { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+        ]);
+        pendingReviews.delete(chatId); await clearCooling(regNo); userLeads.delete(chatId); leadUsers.delete(regNo);
+        await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());
+        break;
+      }
+    }
   } catch (err) {
-    console.error("❌ Sync error:", err.message);
+    console.error('handleCallback ERROR:', err);
+    await sendMessage(chatId, '⚠️ Button error: ' + err.message, getMainButtons());
   }
 }
-// ============================================
-// START
-// ============================================
-const PORT = process.env.PORT || 8080;
 
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('✅ MongoDB connected');
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server on port ${PORT}`);
-      axios.post(`${API_URL}/setWebhook`, { url: process.env.WEBHOOK_URL })
-        .then(() => console.log('✅ Webhook set'))
-        .catch(err => console.error('Webhook error:', err.message));
+async function isRowExpired(rowNum, regNo) {
+  const lock = await tempLocksCollection.findOne({ regNo });
+  if (!lock) return false;
+  if (lock.expiresAt < new Date()) {
+    const rowData = await getLeadRowData(rowNum);
+    const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
+    const tmp = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
+    if (tmp.includes(rv)) {
+      await updateLeadCells(rowNum, [
+        { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+        { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+        { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+        { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+      ]);
+      await tempLocksCollection.deleteOne({ regNo });
+      const uc = leadUsers.get(regNo);
+      if (uc) { userLeads.delete(uc); leadUsers.delete(regNo); }
+      return true;
+    }
+  }
+  return false;
+}
+
+async function sendNext(chatId, sName) {
+  if (isDuplicate(`nextlock_${chatId}`)) {
+    await sendMessage(chatId, '⏳ Wait... already processing.', getMainButtons());
+    return;
+  }
+  pendingReviews.delete(chatId);
+
+  const staff = await staffsCollection.findOne({ chatId });
+  if (!staff) return;
+  const ns = staff.name;
+
+  // Check pending lead
+  const userLeadReg = userLeads.get(chatId);
+  if (userLeadReg) {
+    const rowMap = await getRowMap();
+    const rowNum = rowMap[userLeadReg];
+    if (rowNum) {
+      const rowData = await getLeadRowData(rowNum);
+      const status = safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
+      if (status !== 'DONE') {
+        if (await isRowExpired(rowNum, userLeadReg)) {
+          userLeads.delete(chatId); leadUsers.delete(userLeadReg);
+        } else {
+          const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+          await sendMessage(chatId, rv ? '⚠️ DONE MANDATORY! Click DONE:' : '⚠️ Active lead! Complete it:', getMainButtons());
+          await sendLead(chatId, getLeadMsg(rowData), getLeadButtons(userLeadReg, rv ? false : true));
+          return;
+        }
+      } else {
+        userLeads.delete(chatId);
+      }
+    } else {
+      userLeads.delete(chatId);
+    }
+  }
+
+  // Fetch all data once
+  const allData = await getSheetData();
+  if (allData.length <= 1) {
+    await sendMessage(chatId, '🎉 No leads available right now. 🏆', getMainButtons());
+    return;
+  }
+
+  // Fetch all active cooling locks at once
+  const locks = await tempLocksCollection.find({ expiresAt: { $gt: new Date() } }).toArray();
+  const coolingSet = new Set(locks.map(l => l.regNo));
+
+  let pends = [];
+  for (let i = 1; i < allData.length; i++) {
+    const row = allData[i];
+    const st = safeStr(row[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
+    const as = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]);
+    const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]);
+    const reg = safeStr(row[CONFIG.LEAD_COLS.REG_NO]);
+    if (st !== 'DONE' && st !== 'SENT' && as === '' && !coolingSet.has(reg) && rv === '') {
+      pends.push({ row: i + 1, data: row });
+    }
+  }
+
+  pends.sort((a, b) => {
+    const ra = safeStr(a.data[CONFIG.LEAD_COLS.REMARK]).toUpperCase();
+    const rb = safeStr(b.data[CONFIG.LEAD_COLS.REMARK]).toUpperCase();
+    if (ra === 'EXPIRE' && rb !== 'EXPIRE') return -1;
+    if (ra !== 'EXPIRE' && rb === 'EXPIRE') return 1;
+    return parseSheetDate(a.data[CONFIG.LEAD_COLS.EXPIRED]) - parseSheetDate(b.data[CONFIG.LEAD_COLS.EXPIRED]);
+  });
+
+  if (pends.length === 0) {
+    await sendMessage(chatId, '🎉 No leads available right now. 🏆', getMainButtons());
+    return;
+  }
+
+  const ts = formatDateTime();
+  for (const lead of pends) {
+    const rn = safeStr(lead.data[CONFIG.LEAD_COLS.REG_NO]);
+    if (coolingSet.has(rn)) continue;
+
+    // Fresh verify
+    const fresh = await getLeadRowData(lead.row);
+    if (safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE' ||
+        safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'SENT' ||
+        safeStr(fresh[CONFIG.LEAD_COLS.STAFF_NAME]) !== '' ||
+        safeStr(fresh[CONFIG.LEAD_COLS.REVIEW]) !== '') {
+      continue;
+    }
+
+    await updateLeadCells(lead.row, [
+      { col: CONFIG.LEAD_COLS.STAFF_NAME, value: ns },
+      { col: CONFIG.LEAD_COLS.STATUS, value: 'SENT' },
+      { col: CONFIG.LEAD_COLS.SENT_TIME, value: ts }
+    ]);
+
+    const verify = await getLeadRowData(lead.row);
+    if (safeStr(verify[CONFIG.LEAD_COLS.STAFF_NAME]).toUpperCase() === ns.toUpperCase() &&
+        safeStr(verify[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'SENT') {
+      userLeads.set(chatId, rn);
+      leadUsers.set(rn, chatId);
+      await sendLead(chatId, getLeadMsg(verify), getLeadButtons(rn, true));
+      return;
+    }
+  }
+
+  await sendMessage(chatId, '⏳ All leads just taken by others!\nClick ▶️ START LEAD again.', getMainButtons());
+}
+
+async function sendLead(chatId, text, buttons) {
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, {
+      chat_id: chatId, text, parse_mode: 'Markdown', disable_web_page_preview: true, reply_markup: buttons
     });
-  })
-  .catch(err => console.error('MongoDB error:', err));
+  } catch (e) {
+    console.error('sendLead error:', e.response?.data?.description || e.message);
+  }
+}
+
+async function sendReport(chatId, sName) {
+  const allData = await getSheetData();
+  const sn = safeStr(sName).toUpperCase();
+  const tds = new Date().toLocaleDateString('en-GB');
+  let tDone = 0, tCalls = 0, totDone = 0, pend = 0, rev = 0;
+
+  for (let i = 1; i < allData.length; i++) {
+    const row = allData[i];
+    const staff = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]).toUpperCase();
+    if (staff !== sn) continue;
+    const st = safeStr(row[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
+    const dt = row[CONFIG.LEAD_COLS.DONE_TIME];
+    const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
+
+    if (st === 'DONE') {
+      totDone++;
+      const dds = dt instanceof Date ? dt.toLocaleDateString('en-GB') : safeStr(dt).split(' ')[0];
+      if (dds === tds) {
+        tDone++;
+        tCalls += parseInt(row[CONFIG.LEAD_COLS.COUNT_DIALER] || 0);
+      }
+    } else {
+      if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv) || rv.length > 0) rev++;
+      else pend++;
+    }
+  }
+
+  const msg = `📊 *TODAY REPORT*\n👤 *Name:* ${sName}\n📅 *Date:* ${tds}\n\n📞 *Total Call Count:* ${tCalls}\n✅ *Total Lead Count:* ${tDone}\n🏆 *Totally Count:* ${totDone}\n\n⏳ *Pending:* ${pend}\n📝 *Review:* ${rev}`;
+  await sendMessage(chatId, msg, getMainButtons());
+}
+
+// ==================== REMINDER SYSTEM ====================
+async function checkReminders() {
+  await checkExpiredLocks();
+  const now = new Date();
+  const due = await remindersCollection.find({ fireAt: { $lte: now }, fired: false }).toArray();
+
+  for (const rem of due) {
+    try {
+      const mob = safeStr(rem.customerMobile).replace(/\D/g, '');
+      const cleanMob = mob.startsWith('91') && mob.length > 10 ? mob.substring(2) : mob;
+      const msg = `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
+
+      const rowMap = await getRowMap();
+      const rowNum = rowMap[rem.regNo];
+      if (rowNum) {
+        const rowData = await getLeadRowData(rowNum);
+        if (safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE') {
+          await sendMessage(rem.chatId, msg + '\n\n⚠️ This lead is already marked DONE.', getMainButtons());
+          await remindersCollection.updateOne({ _id: rem._id }, { $set: { fired: true } });
+          continue;
+        }
+        const ts = formatDateTime();
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: rem.staffName },
+          { col: CONFIG.LEAD_COLS.STATUS, value: 'SENT' },
+          { col: CONFIG.LEAD_COLS.SENT_TIME, value: ts }
+        ]);
+        userLeads.set(rem.chatId, rem.regNo);
+        leadUsers.set(rem.regNo, rem.chatId);
+        await sendLead(rem.chatId, msg + '\n\n' + getLeadMsg(rowData), getLeadButtons(rem.regNo, true));
+      } else {
+        await sendMessage(rem.chatId, msg, getMainButtons());
+      }
+      await remindersCollection.updateOne({ _id: rem._id }, { $set: { fired: true } });
+    } catch (e) {
+      console.error('Reminder error:', e);
+    }
+  }
+}
+
+async function checkExpiredLocks() {
+  const expired = await tempLocksCollection.find({ expiresAt: { $lt: new Date() } }).toArray();
+  const rowMap = await getRowMap();
+  for (const lock of expired) {
+    const rowNum = rowMap[lock.regNo];
+    if (rowNum) {
+      const rowData = await getLeadRowData(rowNum);
+      const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
+      if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv)) {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+          { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+          { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+          { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+        ]);
+      }
+    }
+    await tempLocksCollection.deleteOne({ _id: lock._id });
+    const uc = leadUsers.get(lock.regNo);
+    if (uc) { userLeads.delete(uc); leadUsers.delete(lock.regNo); }
+  }
+}
+
+// ==================== ROUTES ====================
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200);
+  processUpdate(req.body).catch(console.error);
+});
+
+app.get('/', (req, res) => res.send('✅ Lead Bot Running on Node.js'));
+
+// ==================== STARTUP ====================
+async function setWebhook() {
+  const url = process.env.WEBHOOK_URL;
+  if (!url) { console.log('WEBHOOK_URL not set'); return; }
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/setWebhook`, { url });
+    console.log('✅ Webhook set:', url);
+  } catch (e) {
+    console.error('Webhook error:', e.response?.data || e.message);
+  }
+}
+
+async function start() {
+  await connectMongo();
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, async () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    await setWebhook();
+  });
+  setInterval(() => checkReminders().catch(console.error), 60000);
+}
+
+start().catch(console.error);
