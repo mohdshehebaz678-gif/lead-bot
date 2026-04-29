@@ -10,12 +10,17 @@ app.use(express.json());
 // ==================== CONFIG ====================
 const CONFIG = {
   TOKEN: process.env.BOT_TOKEN,
-  SHEET_ID: process.env.GOOGLE_SHEET_ID || '1aM7W4ctQ6khEwEIx-JEd2DUJoVznKfVO4Cuhmw814Ps',
+  SHEET_ID: process.env.GOOGLE_SHEET_ID,
   LEADS_SHEET_NAME: 'Sheet1',
+  STAFF_SHEET_NAME: 'STAFF NAME',
   LEAD_COLS: {
     NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, MAKE: 4, REMARK: 5,
     STAFF_NAME: 6, STATUS: 7, REVIEW: 8, DATE: 9,
     SENT_TIME: 10, DONE_TIME: 11, COUNT_DIALER: 12
+  },
+  STAFF_COLS: {
+    USER_NAME: 0, STAFF_NAME: 1, STAFF_NO: 2, ACTIVE_STATUS: 3,
+    EMAIL: 4, GENDER: 5, ID_CREATE: 6, CHAT_ID: 7, MAIL: 8
   }
 };
 
@@ -36,6 +41,9 @@ async function connectMongo() {
   await staffsCollection.createIndex({ userName: 1 });
   await staffsCollection.createIndex({ chatId: 1 });
   console.log('✅ MongoDB connected');
+  
+  // Sync staff data from Google Sheet on startup
+  await syncStaffFromSheet();
 }
 
 // ==================== GOOGLE SHEETS ====================
@@ -114,6 +122,44 @@ function isRateLimited(userId) {
 const pendingReviews = new Map();
 const userLeads = new Map();
 const leadUsers = new Map();
+
+// ==================== STAFF SYNC ====================
+async function syncStaffFromSheet() {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: CONFIG.SHEET_ID,
+      range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
+    });
+    const rows = res.data.values || [];
+    
+    for (const row of rows) {
+      const userName = safeStr(row[CONFIG.STAFF_COLS.USER_NAME]);
+      if (!userName) continue;
+      
+      const staffData = {
+        userName: userName,
+        name: safeStr(row[CONFIG.STAFF_COLS.STAFF_NAME]),
+        staffNo: safeStr(row[CONFIG.STAFF_COLS.STAFF_NO]),
+        activeStatus: safeStr(row[CONFIG.STAFF_COLS.ACTIVE_STATUS]),
+        email: safeStr(row[CONFIG.STAFF_COLS.EMAIL]),
+        gender: safeStr(row[CONFIG.STAFF_COLS.GENDER]),
+        idCreate: safeStr(row[CONFIG.STAFF_COLS.ID_CREATE]),
+        chatId: safeStr(row[CONFIG.STAFF_COLS.CHAT_ID]),
+        mail: safeStr(row[CONFIG.STAFF_COLS.MAIL]),
+        updatedAt: new Date()
+      };
+      
+      await staffsCollection.updateOne(
+        { userName: { $regex: `^${userName}$`, $options: 'i' } },
+        { $set: staffData },
+        { upsert: true }
+      );
+    }
+    console.log(`✅ Synced ${rows.length} staff members`);
+  } catch (e) {
+    console.error('Staff sync error:', e.message);
+  }
+}
 
 // ==================== SHEET HELPERS ====================
 async function getSheetData() {
