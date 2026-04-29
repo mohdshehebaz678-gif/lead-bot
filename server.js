@@ -61,7 +61,7 @@ const speedCache = {
 
 // ==================== MONGODB ====================
 const mongoUri = process.env.MONGODB_URI;
-let db, staffsCollection, remindersCollection, tempLocksCollection;
+let db, staffsCollection, remindersCollection, tempLocksCollection, statsCollection;
 
 async function connectMongo() {
   const client = new MongoClient(mongoUri, { 
@@ -73,14 +73,30 @@ async function connectMongo() {
   staffsCollection = db.collection('staffs');
   remindersCollection = db.collection('reminders');
   tempLocksCollection = db.collection('tempLocks');
+  statsCollection = db.collection('staff_stats'); // NEW: daily stats
 
   await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
   await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
   await staffsCollection.createIndex({ userName: 1 }).catch(() => {});
   await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
+  await statsCollection.createIndex({ staffName: 1, date: 1 }).catch(() => {}); // NEW
   console.log('✅ MongoDB connected');
   
   await syncStaffFromSheet();
+}
+
+// ==================== STATS TRACKING ====================
+async function incrementStat(staffName, field) {
+  const today = new Date().toLocaleDateString('en-GB');
+  try {
+    await statsCollection.updateOne(
+      { staffName, date: today },
+      { $inc: { [field]: 1 }, $setOnInsert: { createdAt: new Date() } },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error('Stats error:', e.message);
+  }
 }
 
 // ==================== GOOGLE SHEETS ====================
@@ -244,7 +260,9 @@ async function syncStaffFromSheet() {
         { upsert: true }
       );
       
-      speedCache.setStaff(staffData);
+      // FIX: Fetch from DB to get _id before caching
+      const dbStaff = await staffsCollection.findOne({ userName: { $regex: `^${userName}$`, $options: 'i' } });
+      if (dbStaff) speedCache.setStaff(dbStaff);
     }
     console.log(`✅ Synced ${rows.length} staff members`);
   } catch (e) {
@@ -282,17 +300,13 @@ async function getRowMap() {
 }
 
 async function getLeadRowData(rowNum) {
-  const cached = speedCache.leads.get(rowNum);
-  if (cached) return cached;
-  
+  // FIX: Removed broken cache check (rowNum keys don't match regNo keys)
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
     range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:M${rowNum}`,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
-  const data = (res.data.values?.[0] || []).map(safeStr);
-  speedCache.setLead(rowNum, data);
-  return data;
+  return (res.data.values?.[0] || []).map(safeStr);
 }
 
 async function updateLeadCells(rowNum, updates) {
@@ -300,8 +314,6 @@ async function updateLeadCells(rowNum, updates) {
     range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + u.col)}${rowNum}`,
     values: [[u.value]]
   }));
-  
-  speedCache.leads.delete(rowNum);
   
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: CONFIG.SHEET_ID,
@@ -555,12 +567,16 @@ async function handleText(text, chatId, userId) {
 
       if (reminder && reminder.isFinal) {
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
+        await incrementStat(sn, 'otherReview'); // NEW
       } else if (reminder) {
         const tStr = reminder.time.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
         await remindersCollection.insertOne(reminder.data);
+        await incrementStat(sn, 'reminders'); // NEW
+        await incrementStat(sn, 'otherReview'); // NEW
       } else {
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n⚠️ Click DONE to complete!`, getMainButtons());
+        await incrementStat(sn, 'otherReview'); // NEW
       }
       pendingReviews.delete(chatId);
       return;
@@ -585,11 +601,17 @@ async function handleText(text, chatId, userId) {
       await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', null, true);
       return;
     }
+    // FIX: Use userName instead of _id to avoid null crash for new users
     await staffsCollection.updateOne({ chatId }, { $set: { chatId: '' } });
-    await staffsCollection.updateOne({ _id: loginStaff._id }, { $set: { chatId } });
-    const updated = await staffsCollection.findOne({ _id: loginStaff._id });
-    const saved = updated.chatId === chatId;
+    await staffsCollection.updateOne(
+      { userName: { $regex: `^${text}$`, $options: 'i' } },
+      { $set: { chatId } }
+    );
+    const updated = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
+    const saved = updated && updated.chatId === chatId;
     await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
+    // Update cache with new chatId so bot works immediately
+    speedCache.setStaff({ ...loginStaff, chatId });
     return;
   }
 
@@ -659,6 +681,7 @@ async function handleCallback(cq, chatId, userId) {
         let mDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
         if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.substring(2);
         await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n📱 +91${mDig}\n🔄 Count: ${c}\n\n👆 Tap number to dial`, getMainButtons());
+        await incrementStat(sName, 'calls'); // NEW
         break;
       }
       case 'WHATSAPP': {
@@ -668,8 +691,10 @@ async function handleCallback(cq, chatId, userId) {
         const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
         const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
         const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
+        // FIX: Removed space after 91
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
         await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        await incrementStat(sName, 'whatsapp'); // NEW
         break;
       }
       case 'REVIEW':
@@ -681,6 +706,7 @@ async function handleCallback(cq, chatId, userId) {
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await incrementStat(sName, 'ringing'); // NEW
         break;
       case 'NOTCONN':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'NOT CONNECTED' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
@@ -688,6 +714,7 @@ async function handleCallback(cq, chatId, userId) {
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await incrementStat(sName, 'notConnected'); // NEW
         break;
       case 'OUTAREA':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'OUT OF AREA' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
@@ -695,6 +722,7 @@ async function handleCallback(cq, chatId, userId) {
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await incrementStat(sName, 'outOfArea'); // NEW
         break;
       case 'BUSY':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'BUSY' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
@@ -702,6 +730,7 @@ async function handleCallback(cq, chatId, userId) {
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await incrementStat(sName, 'busy'); // NEW
         break;
       case 'OTHER':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
@@ -713,6 +742,12 @@ async function handleCallback(cq, chatId, userId) {
       case 'DONE': {
         const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
         if (!rv) { await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', getMainButtons()); return; }
+        // FIX: Prevent double-counting DONE
+        const currentStatus = safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
+        if (currentStatus === 'DONE') {
+          await sendMessage(chatId, '⚠️ Already marked DONE!', getMainButtons());
+          return;
+        }
         const tempReviews = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
         const rvUpper = rv.toUpperCase();
         if (tempReviews.includes(rvUpper)) {
@@ -732,6 +767,7 @@ async function handleCallback(cq, chatId, userId) {
         const updatedRow = await getLeadRowData(rowNum);
         await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${tStr}`, null);
         await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
+        await incrementStat(sName, 'done'); // NEW
         break;
       }
       case 'SKIP': {
@@ -883,34 +919,74 @@ async function sendLead(chatId, text, buttons) {
   return sendMessage(chatId, text, buttons);
 }
 
+// ==================== ENHANCED STATUS REPORT ====================
 async function sendReport(chatId, sName) {
-  const allData = await getSheetData();
+  const today = new Date().toLocaleDateString('en-GB');
   const sn = safeStr(sName).toUpperCase();
-  const tds = new Date().toLocaleDateString('en-GB');
-  let tDone = 0, tCalls = 0, totDone = 0, pend = 0, rev = 0;
-
+  
+  // Get today's stats from MongoDB
+  const todayStats = await statsCollection.findOne({ staffName: sName, date: today }) || {};
+  
+  // Get sheet data for all-time and current status counts
+  const allData = await getSheetData();
+  let totDone = 0, tLeads = 0, pend = 0, rev = 0;
+  
   for (let i = 1; i < allData.length; i++) {
     const row = allData[i];
     const staff = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]).toUpperCase();
     if (staff !== sn) continue;
+    
     const st = safeStr(row[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
     const dt = row[CONFIG.LEAD_COLS.DONE_TIME];
+    const sentTime = row[CONFIG.LEAD_COLS.SENT_TIME];
     const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
-
+    
     if (st === 'DONE') {
       totDone++;
+    }
+    
+    // Count unique leads worked today (sent today or done today)
+    let workedToday = false;
+    if (sentTime) {
+      const sds = sentTime instanceof Date ? sentTime.toLocaleDateString('en-GB') : safeStr(sentTime).split(' ')[0];
+      if (sds === today) workedToday = true;
+    }
+    if (!workedToday && dt) {
       const dds = dt instanceof Date ? dt.toLocaleDateString('en-GB') : safeStr(dt).split(' ')[0];
-      if (dds === tds) {
-        tDone++;
-        tCalls += parseInt(row[CONFIG.LEAD_COLS.COUNT_DIALER] || 0);
-      }
-    } else {
+      if (dds === today) workedToday = true;
+    }
+    if (workedToday) tLeads++;
+    
+    // Current status counts
+    if (st !== 'DONE') {
       if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv) || rv.length > 0) rev++;
       else pend++;
     }
   }
-
-  const msg = `📊 *TODAY REPORT*\n👤 *Name:* ${sName}\n📅 *Date:* ${tds}\n\n📞 *Total Call Count:* ${tCalls}\n✅ *Total Lead Count:* ${tDone}\n🏆 *Totally Count:* ${totDone}\n\n⏳ *Pending:* ${pend}\n📝 *Review:* ${rev}`;
+  
+  const calls = todayStats.calls || 0;
+  const whatsapp = todayStats.whatsapp || 0;
+  const done = todayStats.done || 0;
+  const ringing = todayStats.ringing || 0;
+  const notConnected = todayStats.notConnected || 0;
+  const outOfArea = todayStats.outOfArea || 0;
+  const busy = todayStats.busy || 0;
+  const otherReview = todayStats.otherReview || 0;
+  const reminders = todayStats.reminders || 0;
+  const mixCount = ringing + notConnected + outOfArea + busy;
+  
+  const msg = `📊 *DAILY STATUS REPORT*\n👤 *Name:* ${sName}\n📅 *Date:* ${today}\n\n` +
+    `📞 *Total Call Count:* ${calls}\n` +
+    `💬 *Total WhatsApp Count:* ${whatsapp}\n` +
+    `✅ *Total Done Count:* ${done}\n` +
+    `📋 *Total Lead Count:* ${tLeads}\n` +
+    `🔄 *RINGING / NOT CON / OUT AREA / BUSY:* ${mixCount}\n` +
+    `📝 *Total Other Review Count:* ${otherReview}\n` +
+    `⏰ *Total Reminder Set Count:* ${reminders}\n` +
+    `🏆 *All Over Done Count:* ${totDone}\n\n` +
+    `⏳ *Current Pending:* ${pend}\n` +
+    `📝 *Current Review:* ${rev}`;
+    
   await sendMessage(chatId, msg, getMainButtons());
 }
 
