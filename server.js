@@ -100,6 +100,18 @@ function formatDateTime(d = new Date()) {
   return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function parseSheetDate(val) {
+  if (!val) return new Date(9999, 0, 1);
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const m = String(val).match(/(\d{1,2})-([a-zA-Z]{3})-(\d{4})/);
+  if (m) {
+    const d = new Date(parseInt(m[3]), months[m[2].toLowerCase()], parseInt(m[1]));
+    return isNaN(d) ? new Date(9999, 0, 1) : d;
+  }
+  const d = new Date(val);
+  return isNaN(d) ? new Date(9999, 0, 1) : d;
+}
+
 // ==================== INSTANT TELEGRAM API ====================
 const tgQueue = [];
 let tgProcessing = false;
@@ -116,7 +128,6 @@ async function processTgQueue() {
     } catch (e) {
       reject(e);
     }
-    // Small delay to avoid rate limits
     if (tgQueue.length > 0) await new Promise(r => setTimeout(r, 50));
   }
   
@@ -233,7 +244,6 @@ async function syncStaffFromSheet() {
         { upsert: true }
       );
       
-      // Update cache
       speedCache.setStaff(staffData);
     }
     console.log(`✅ Synced ${rows.length} staff members`);
@@ -242,18 +252,21 @@ async function syncStaffFromSheet() {
   }
 }
 
-// ==================== FAST SHEET HELPERS ====================
-async function getRowMap() {
-  // Use cache if valid
-  if (speedCache.rowMap.size > 0) {
-    return Object.fromEntries(speedCache.rowMap);
-  }
-  
+// ==================== SHEET DATA ====================
+async function getSheetData() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
     range: `${CONFIG.LEADS_SHEET_NAME}!A1:M10000`
   });
-  const data = res.data.values || [];
+  return res.data.values || [];
+}
+
+async function getRowMap() {
+  if (speedCache.rowMap.size > 0) {
+    return Object.fromEntries(speedCache.rowMap);
+  }
+  
+  const data = await getSheetData();
   const map = {};
   
   for (let i = 1; i < data.length; i++) {
@@ -269,7 +282,6 @@ async function getRowMap() {
 }
 
 async function getLeadRowData(rowNum) {
-  // Check cache first
   const cached = speedCache.leads.get(rowNum);
   if (cached) return cached;
   
@@ -289,7 +301,6 @@ async function updateLeadCells(rowNum, updates) {
     values: [[u.value]]
   }));
   
-  // Invalidate cache for this row
   speedCache.leads.delete(rowNum);
   
   await sheets.spreadsheets.values.batchUpdate({
@@ -316,7 +327,7 @@ const rateLimits = new Map();
 function isRateLimited(userId) {
   const now = Date.now();
   const last = rateLimits.get(userId);
-  if (last && now - last < 500) return true; // Reduced to 500ms for faster response
+  if (last && now - last < 500) return true;
   rateLimits.set(userId, now);
   return false;
 }
@@ -482,7 +493,6 @@ async function processUpdate(update) {
   const userId = safeStr(update.message?.from?.id || update.callback_query?.from?.id);
   if (!chatId || !userId) return;
 
-  // INSTANT ACK for callbacks
   if (update.callback_query) {
     answerCallbackQuery(update.callback_query.id).catch(() => {});
   }
@@ -493,7 +503,6 @@ async function processUpdate(update) {
   if (isDuplicate(dupKey)) return;
   if (isRateLimited(userId)) return;
 
-  // Process async for instant response
   processUpdateAsync(update, chatId, userId).catch(console.error);
 }
 
@@ -528,7 +537,6 @@ async function handleText(text, chatId, userId) {
         return;
       }
       
-      // Fast staff lookup from cache
       let staff = speedCache.getStaffByChatId(chatId);
       if (!staff) staff = await staffsCollection.findOne({ chatId });
       const sn = staff ? staff.name : '';
@@ -559,7 +567,6 @@ async function handleText(text, chatId, userId) {
     }
   }
 
-  // Fast staff lookup from cache
   let staff = speedCache.getStaffByChatId(chatId);
   if (!staff) {
     staff = await staffsCollection.findOne({ chatId });
@@ -617,7 +624,6 @@ async function handleCallback(cq, chatId, userId) {
     const act = data.split('_')[0];
     if (isDuplicate(`actlock_${chatId}_${act}`)) return;
 
-    // Fast staff lookup
     let staff = speedCache.getStaffByChatId(chatId);
     if (!staff) {
       staff = await staffsCollection.findOne({ chatId });
@@ -778,13 +784,11 @@ async function sendNext(chatId, sName) {
   }
   pendingReviews.delete(chatId);
 
-  // Fast staff lookup
   let staff = speedCache.getStaffByChatId(chatId);
   if (!staff) staff = await staffsCollection.findOne({ chatId });
   if (!staff) return;
   const ns = staff.name;
 
-  // Check pending lead
   const userLeadReg = userLeads.get(chatId);
   if (userLeadReg) {
     const rowMap = await getRowMap();
@@ -809,14 +813,12 @@ async function sendNext(chatId, sName) {
     }
   }
 
-  // Fetch all data once
   const allData = await getSheetData();
   if (allData.length <= 1) {
     await sendMessage(chatId, '🎉 No leads available right now. 🏆', getMainButtons());
     return;
   }
 
-  // Fetch all active cooling locks at once
   const locks = await tempLocksCollection.find({ expiresAt: { $gt: new Date() } }).toArray();
   const coolingSet = new Set(locks.map(l => l.regNo));
 
@@ -850,7 +852,6 @@ async function sendNext(chatId, sName) {
     const rn = safeStr(lead.data[CONFIG.LEAD_COLS.REG_NO]);
     if (coolingSet.has(rn)) continue;
 
-    // Fresh verify
     const fresh = await getLeadRowData(lead.row);
     if (safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE' ||
         safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'SENT' ||
