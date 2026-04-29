@@ -24,25 +24,62 @@ const CONFIG = {
   }
 };
 
+// ==================== SPEED CACHE ====================
+const speedCache = {
+  staffByChatId: new Map(),
+  staffByUserName: new Map(),
+  leads: new Map(),
+  rowMap: new Map(),
+  lastSync: 0,
+  
+  getStaffByChatId(chatId) {
+    return this.staffByChatId.get(chatId);
+  },
+  
+  getStaffByUserName(userName) {
+    return this.staffByUserName.get(userName.toLowerCase());
+  },
+  
+  setStaff(staff) {
+    if (staff.chatId) this.staffByChatId.set(staff.chatId, staff);
+    if (staff.userName) this.staffByUserName.set(staff.userName.toLowerCase(), staff);
+  },
+  
+  getLead(regNo) {
+    return this.leads.get(regNo);
+  },
+  
+  setLead(regNo, data) {
+    this.leads.set(regNo, data);
+  },
+  
+  invalidateLeads() {
+    this.leads.clear();
+    this.rowMap.clear();
+  }
+};
+
 // ==================== MONGODB ====================
 const mongoUri = process.env.MONGODB_URI;
 let db, staffsCollection, remindersCollection, tempLocksCollection;
 
 async function connectMongo() {
-  const client = new MongoClient(mongoUri);
+  const client = new MongoClient(mongoUri, { 
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000
+  });
   await client.connect();
   db = client.db(process.env.DB_NAME || 'leadbot_db');
   staffsCollection = db.collection('staffs');
   remindersCollection = db.collection('reminders');
   tempLocksCollection = db.collection('tempLocks');
 
- await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
-await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
-await staffsCollection.createIndex({ userName: 1 }).catch(() => {});
-await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
+  await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
+  await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
+  await staffsCollection.createIndex({ userName: 1 }).catch(() => {});
+  await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
   console.log('✅ MongoDB connected');
   
-  // Sync staff data from Google Sheet on startup
   await syncStaffFromSheet();
 }
 
@@ -63,144 +100,36 @@ function formatDateTime(d = new Date()) {
   return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function parseSheetDate(val) {
-  if (!val) return new Date(9999, 0, 1);
-  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-  const m = String(val).match(/(\d{1,2})-([a-zA-Z]{3})-(\d{4})/);
-  if (m) {
-    const d = new Date(parseInt(m[3]), months[m[2].toLowerCase()], parseInt(m[1]));
-    return isNaN(d) ? new Date(9999, 0, 1) : d;
-  }
-  const d = new Date(val);
-  return isNaN(d) ? new Date(9999, 0, 1) : d;
-}
+// ==================== INSTANT TELEGRAM API ====================
+const tgQueue = [];
+let tgProcessing = false;
 
-function fuzzyHas(text, keyword, minChars = 3) {
-  const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
-  const k = keyword.toLowerCase();
-  if (t.includes(' ' + k + ' ') || t.includes(k)) return true;
-  if (k.length >= minChars) {
-    const prefix = k.substring(0, minChars);
-    for (const w of t.split(/\s+/)) {
-      const clean = w.replace(/[^a-z0-9\u0900-\u097F]/g, '');
-      if (clean.length >= minChars && clean.substring(0, minChars) === prefix) return true;
-      if (clean.length >= minChars && (clean.includes(k) || (k.length >= minChars && k.includes(clean)))) return true;
+async function processTgQueue() {
+  if (tgProcessing || tgQueue.length === 0) return;
+  tgProcessing = true;
+  
+  while (tgQueue.length > 0) {
+    const { url, payload, resolve, reject } = tgQueue.shift();
+    try {
+      const res = await axios.post(url, payload, { timeout: 10000 });
+      resolve(res);
+    } catch (e) {
+      reject(e);
     }
+    // Small delay to avoid rate limits
+    if (tgQueue.length > 0) await new Promise(r => setTimeout(r, 50));
   }
-  return false;
+  
+  tgProcessing = false;
 }
 
-function fuzzyAny(text, keywords, minChars) {
-  return keywords.some(kw => fuzzyHas(text, kw, minChars));
-}
-
-// Deduplication
-const processedMessages = new Map();
-function isDuplicate(key) {
-  const now = Date.now();
-  if (processedMessages.has(key)) {
-    if (now - processedMessages.get(key) < 30000) return true;
-  }
-  processedMessages.set(key, now);
-  for (const [k, v] of processedMessages) {
-    if (now - v > 60000) processedMessages.delete(k);
-  }
-  return false;
-}
-
-// Rate limiting
-const rateLimits = new Map();
-function isRateLimited(userId) {
-  const now = Date.now();
-  const last = rateLimits.get(userId);
-  if (last && now - last < 1500) return true;
-  rateLimits.set(userId, now);
-  return false;
-}
-
-// In-memory state (lost on restart — acceptable)
-const pendingReviews = new Map();
-const userLeads = new Map();
-const leadUsers = new Map();
-
-// ==================== STAFF SYNC ====================
-async function syncStaffFromSheet() {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
-    });
-    const rows = res.data.values || [];
-    
-    for (const row of rows) {
-      const userName = safeStr(row[CONFIG.STAFF_COLS.USER_NAME]);
-      if (!userName) continue;
-      
-      const staffData = {
-        userName: userName,
-        name: safeStr(row[CONFIG.STAFF_COLS.STAFF_NAME]),
-        staffNo: safeStr(row[CONFIG.STAFF_COLS.STAFF_NO]),
-        activeStatus: safeStr(row[CONFIG.STAFF_COLS.ACTIVE_STATUS]),
-        email: safeStr(row[CONFIG.STAFF_COLS.EMAIL]),
-        gender: safeStr(row[CONFIG.STAFF_COLS.GENDER]),
-        idCreate: safeStr(row[CONFIG.STAFF_COLS.ID_CREATE]),
-        chatId: safeStr(row[CONFIG.STAFF_COLS.CHAT_ID]),
-        mail: safeStr(row[CONFIG.STAFF_COLS.MAIL]),
-        updatedAt: new Date()
-      };
-      
-      await staffsCollection.updateOne(
-        { userName: { $regex: `^${userName}$`, $options: 'i' } },
-        { $set: staffData },
-        { upsert: true }
-      );
-    }
-    console.log(`✅ Synced ${rows.length} staff members`);
-  } catch (e) {
-    console.error('Staff sync error:', e.message);
-  }
-}
-
-// ==================== SHEET HELPERS ====================
-async function getSheetData() {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A1:M10000`
-  });
-  return res.data.values || [];
-}
-
-async function getRowMap() {
-  const data = await getSheetData();
-  const map = {};
-  for (let i = 1; i < data.length; i++) {
-    const rn = safeStr(data[i][CONFIG.LEAD_COLS.REG_NO]);
-    if (rn) map[rn] = i + 1;
-  }
-  return map;
-}
-
-async function getLeadRowData(rowNum) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:M${rowNum}`,
-    valueRenderOption: 'UNFORMATTED_VALUE'
-  });
-  return (res.data.values?.[0] || []).map(safeStr);
-}
-
-async function updateLeadCells(rowNum, updates) {
-  const data = updates.map(u => ({
-    range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + u.col)}${rowNum}`,
-    values: [[u.value]]
-  }));
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: CONFIG.SHEET_ID,
-    resource: { valueInputOption: 'USER_ENTERED', data }
+function tgPost(url, payload) {
+  return new Promise((resolve, reject) => {
+    tgQueue.push({ url, payload, resolve, reject });
+    processTgQueue();
   });
 }
 
-// ==================== TELEGRAM API ====================
 async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = false) {
   const payload = {
     chat_id: chatId,
@@ -210,33 +139,22 @@ async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = fa
   };
   if (removeKeyboard) payload.reply_markup = JSON.stringify({ remove_keyboard: true });
   else if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload);
-  } catch (e) {
-    console.error('sendMessage error:', e.response?.data?.description || e.message);
-  }
+  
+  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload);
 }
 
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'Markdown' };
   if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload);
-  } catch (e) {
-    console.error('editMessage error:', e.response?.data?.description || e.message);
-  }
+  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload);
 }
 
 async function answerCallbackQuery(queryId) {
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId });
-  } catch (e) {}
+  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId });
 }
 
 async function deleteMessage(chatId, messageId) {
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId });
-  } catch (e) {}
+  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId });
 }
 
 // ==================== BUTTONS & MESSAGES ====================
@@ -283,11 +201,136 @@ function getLeadMsg(rowData) {
   return msg;
 }
 
+// ==================== STAFF SYNC ====================
+async function syncStaffFromSheet() {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: CONFIG.SHEET_ID,
+      range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
+    });
+    const rows = res.data.values || [];
+    
+    for (const row of rows) {
+      const userName = safeStr(row[CONFIG.STAFF_COLS.USER_NAME]);
+      if (!userName) continue;
+      
+      const staffData = {
+        userName: userName,
+        name: safeStr(row[CONFIG.STAFF_COLS.STAFF_NAME]),
+        staffNo: safeStr(row[CONFIG.STAFF_COLS.STAFF_NO]),
+        activeStatus: safeStr(row[CONFIG.STAFF_COLS.ACTIVE_STATUS]),
+        email: safeStr(row[CONFIG.STAFF_COLS.EMAIL]),
+        gender: safeStr(row[CONFIG.STAFF_COLS.GENDER]),
+        idCreate: safeStr(row[CONFIG.STAFF_COLS.ID_CREATE]),
+        chatId: safeStr(row[CONFIG.STAFF_COLS.CHAT_ID]),
+        mail: safeStr(row[CONFIG.STAFF_COLS.MAIL]),
+        updatedAt: new Date()
+      };
+      
+      await staffsCollection.updateOne(
+        { userName: { $regex: `^${userName}$`, $options: 'i' } },
+        { $set: staffData },
+        { upsert: true }
+      );
+      
+      // Update cache
+      speedCache.setStaff(staffData);
+    }
+    console.log(`✅ Synced ${rows.length} staff members`);
+  } catch (e) {
+    console.error('Staff sync error:', e.message);
+  }
+}
+
+// ==================== FAST SHEET HELPERS ====================
+async function getRowMap() {
+  // Use cache if valid
+  if (speedCache.rowMap.size > 0) {
+    return Object.fromEntries(speedCache.rowMap);
+  }
+  
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: CONFIG.SHEET_ID,
+    range: `${CONFIG.LEADS_SHEET_NAME}!A1:M10000`
+  });
+  const data = res.data.values || [];
+  const map = {};
+  
+  for (let i = 1; i < data.length; i++) {
+    const rn = safeStr(data[i][CONFIG.LEAD_COLS.REG_NO]);
+    if (rn) {
+      map[rn] = i + 1;
+      speedCache.setLead(rn, data[i]);
+    }
+  }
+  
+  speedCache.rowMap = new Map(Object.entries(map));
+  return map;
+}
+
+async function getLeadRowData(rowNum) {
+  // Check cache first
+  const cached = speedCache.leads.get(rowNum);
+  if (cached) return cached;
+  
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: CONFIG.SHEET_ID,
+    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:M${rowNum}`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const data = (res.data.values?.[0] || []).map(safeStr);
+  speedCache.setLead(rowNum, data);
+  return data;
+}
+
+async function updateLeadCells(rowNum, updates) {
+  const data = updates.map(u => ({
+    range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + u.col)}${rowNum}`,
+    values: [[u.value]]
+  }));
+  
+  // Invalidate cache for this row
+  speedCache.leads.delete(rowNum);
+  
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: CONFIG.SHEET_ID,
+    resource: { valueInputOption: 'USER_ENTERED', data }
+  });
+}
+
+// ==================== DEDUPLICATION & RATE LIMITING ====================
+const processedMessages = new Map();
+function isDuplicate(key) {
+  const now = Date.now();
+  if (processedMessages.has(key)) {
+    if (now - processedMessages.get(key) < 30000) return true;
+  }
+  processedMessages.set(key, now);
+  for (const [k, v] of processedMessages) {
+    if (now - v > 60000) processedMessages.delete(k);
+  }
+  return false;
+}
+
+const rateLimits = new Map();
+function isRateLimited(userId) {
+  const now = Date.now();
+  const last = rateLimits.get(userId);
+  if (last && now - last < 500) return true; // Reduced to 500ms for faster response
+  rateLimits.set(userId, now);
+  return false;
+}
+
+// In-memory state
+const pendingReviews = new Map();
+const userLeads = new Map();
+const leadUsers = new Map();
+
 // ==================== SMART REMINDER ====================
 function isFinalResponse(text) {
   const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
   const cb = ['baad me','baadme','bad me','badme','baad mein','bad mein','baad m','bad m','baadmein','baad mai','bad mai','baad me kro','bad me kro'];
-  if (fuzzyAny(text, cb, 4)) return false;
+  if (cb.some(x => t.includes(x))) return false;
 
   if (/\b(?:already|alredy)\b/.test(t) && /\b(?:renew|renewed|done|taken|purchase|bought)\b/.test(t)) return true;
   if (/\b(?:renew|policy|insurance)\b/.test(t) && /\b(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)\b/.test(t)) return true;
@@ -432,12 +475,17 @@ async function clearCooling(regNo) {
   await tempLocksCollection.deleteOne({ regNo });
 }
 
-// ==================== HANDLERS ====================
+// ==================== INSTANT HANDLERS ====================
 async function processUpdate(update) {
   if (!update.message && !update.callback_query) return;
   const chatId = safeStr(update.message?.chat?.id || update.callback_query?.message?.chat?.id);
   const userId = safeStr(update.message?.from?.id || update.callback_query?.from?.id);
   if (!chatId || !userId) return;
+
+  // INSTANT ACK for callbacks
+  if (update.callback_query) {
+    answerCallbackQuery(update.callback_query.id).catch(() => {});
+  }
 
   let dupKey;
   if (update.callback_query) dupKey = `d_${userId}_${update.callback_query.message.message_id}_${update.callback_query.data}`;
@@ -445,12 +493,17 @@ async function processUpdate(update) {
   if (isDuplicate(dupKey)) return;
   if (isRateLimited(userId)) return;
 
+  // Process async for instant response
+  processUpdateAsync(update, chatId, userId).catch(console.error);
+}
+
+async function processUpdateAsync(update, chatId, userId) {
   try {
     if (update.callback_query) await handleCallback(update.callback_query, chatId, userId);
     else if (update.message?.text) await handleText(update.message.text.trim(), chatId, userId);
   } catch (err) {
     console.error('processUpdate ERROR:', err);
-    await sendMessage(chatId, '⚠️ Error: ' + err.message, getMainButtons());
+    sendMessage(chatId, '⚠️ Error: ' + err.message, getMainButtons()).catch(() => {});
   }
 }
 
@@ -474,7 +527,10 @@ async function handleText(text, chatId, userId) {
         await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons());
         return;
       }
-      const staff = await staffsCollection.findOne({ chatId });
+      
+      // Fast staff lookup from cache
+      let staff = speedCache.getStaffByChatId(chatId);
+      if (!staff) staff = await staffsCollection.findOne({ chatId });
       const sn = staff ? staff.name : '';
 
       await updateLeadCells(rowNum, [
@@ -503,7 +559,12 @@ async function handleText(text, chatId, userId) {
     }
   }
 
-  let staff = await staffsCollection.findOne({ chatId });
+  // Fast staff lookup from cache
+  let staff = speedCache.getStaffByChatId(chatId);
+  if (!staff) {
+    staff = await staffsCollection.findOne({ chatId });
+    if (staff) speedCache.setStaff(staff);
+  }
 
   if (text === '/start') {
     if (staff) await sendWelcome(chatId, staff);
@@ -511,7 +572,7 @@ async function handleText(text, chatId, userId) {
     return;
   }
 
-  const loginStaff = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
+  const loginStaff = speedCache.getStaffByUserName(text);
   if (loginStaff) {
     if (safeStr(loginStaff.activeStatus).toUpperCase() !== 'ACTIVE') {
       await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', null, true);
@@ -555,9 +616,14 @@ async function handleCallback(cq, chatId, userId) {
     const messageId = cq.message.message_id;
     const act = data.split('_')[0];
     if (isDuplicate(`actlock_${chatId}_${act}`)) return;
-    await answerCallbackQuery(cq.id);
 
-    const staff = await staffsCollection.findOne({ chatId });
+    // Fast staff lookup
+    let staff = speedCache.getStaffByChatId(chatId);
+    if (!staff) {
+      staff = await staffsCollection.findOne({ chatId });
+      if (staff) speedCache.setStaff(staff);
+    }
+    
     if (!staff) { await sendMessage(chatId, '❌ Session expired. Send /start', getMainButtons()); return; }
     if (safeStr(staff.activeStatus).toUpperCase() !== 'ACTIVE') { await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', getMainButtons()); return; }
 
@@ -712,7 +778,9 @@ async function sendNext(chatId, sName) {
   }
   pendingReviews.delete(chatId);
 
-  const staff = await staffsCollection.findOne({ chatId });
+  // Fast staff lookup
+  let staff = speedCache.getStaffByChatId(chatId);
+  if (!staff) staff = await staffsCollection.findOne({ chatId });
   if (!staff) return;
   const ns = staff.name;
 
@@ -811,13 +879,7 @@ async function sendNext(chatId, sName) {
 }
 
 async function sendLead(chatId, text, buttons) {
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, {
-      chat_id: chatId, text, parse_mode: 'Markdown', disable_web_page_preview: true, reply_markup: buttons
-    });
-  } catch (e) {
-    console.error('sendLead error:', e.response?.data?.description || e.message);
-  }
+  return sendMessage(chatId, text, buttons);
 }
 
 async function sendReport(chatId, sName) {
@@ -917,10 +979,10 @@ async function checkExpiredLocks() {
 // ==================== ROUTES ====================
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
-  processUpdate(req.body).catch(console.error);
+  processUpdate(req.body);
 });
 
-app.get('/', (req, res) => res.send('✅ Lead Bot Running on Node.js'));
+app.get('/', (req, res) => res.send('✅ Lead Bot Running on Node.js - SPEED OPTIMIZED'));
 
 // ==================== STARTUP ====================
 async function setWebhook() {
