@@ -36,10 +36,10 @@ async function connectMongo() {
   remindersCollection = db.collection('reminders');
   tempLocksCollection = db.collection('tempLocks');
 
-  await remindersCollection.createIndex({ fireAt: 1 });
-  await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-  await staffsCollection.createIndex({ userName: 1 });
-  await staffsCollection.createIndex({ chatId: 1 });
+ await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
+await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
+await staffsCollection.createIndex({ userName: 1 }).catch(() => {});
+await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
   console.log('✅ MongoDB connected');
   
   // Sync staff data from Google Sheet on startup
