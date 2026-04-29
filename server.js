@@ -45,6 +45,11 @@ const speedCache = {
     if (staff.userName) this.staffByUserName.set(staff.userName.toLowerCase(), staff);
   },
   
+  clearStaffCache() {
+    this.staffByChatId.clear();
+    this.staffByUserName.clear();
+  },
+  
   getLead(regNo) {
     return this.leads.get(regNo);
   },
@@ -231,6 +236,8 @@ function getLeadMsg(rowData) {
 // ==================== STAFF SYNC ====================
 async function syncStaffFromSheet() {
   try {
+    speedCache.clearStaffCache();
+    
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
       range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
@@ -327,7 +334,6 @@ async function getRowMap() {
   return map;
 }
 
-// FIX: Removed UNFORMATTED_VALUE so dates come as strings like "28-May-2026"
 async function getLeadRowData(rowNum) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
@@ -517,7 +523,7 @@ async function isInCooling(regNo) {
   return true;
 }
 
-async function setCooling(regNo, hours = 3) {
+async function setCooling(regNo, hours = 2) {
   await tempLocksCollection.updateOne({ regNo }, { $set: { regNo, expiresAt: new Date(Date.now() + hours * 3600000) } }, { upsert: true });
 }
 
@@ -622,6 +628,12 @@ async function handleText(text, chatId, userId) {
     return;
   }
 
+  if (text === '/refresh') {
+    await syncStaffFromSheet();
+    await sendMessage(chatId, '🔄 Staff data refreshed from Google Sheet!\n\nAb se naye ACTIVE/DEACTIVE status turant kaam karenge.', getMainButtons());
+    return;
+  }
+
   const loginStaff = speedCache.getStaffByUserName(text);
   if (loginStaff) {
     if (safeStr(loginStaff.activeStatus).toUpperCase() !== 'ACTIVE') {
@@ -636,7 +648,6 @@ async function handleText(text, chatId, userId) {
     const updated = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
     const saved = updated && updated.chatId === chatId;
     
-    // FIX: Write Chat ID back to Google Sheet
     await updateStaffChatIdInSheet(text, chatId);
     
     await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
@@ -664,7 +675,7 @@ async function sendWelcome(chatId, staff) {
   const un = safeStr(staff.userName);
   const st = safeStr(staff.activeStatus);
   const em = st.toUpperCase() === 'ACTIVE' ? '🟢' : '🔴';
-  const msg = `👋 *${sn}*\n🆔 \`${un}\`\n${em} *${st}*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 3Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Permanent Lock\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE`;
+  const msg = `👋 *${sn}*\n🆔 \`${un}\`\n${em} *${st}*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Permanent Lock\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE`;
   await sendMessage(chatId, msg, getMainButtons());
 }
 
@@ -691,7 +702,7 @@ async function handleCallback(cq, chatId, userId) {
     if (!rowNum) { await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons()); return; }
 
     if (await isRowExpired(rowNum, regNo)) {
-      await sendMessage(chatId, '⏱️ This lead expired (3 hours passed).\nClick ▶️ START LEAD for new.', getMainButtons());
+      await sendMessage(chatId, '⏱️ This lead expired (2 hours passed).\nClick ▶️ START LEAD for new.', getMainButtons());
       return;
     }
 
@@ -730,34 +741,34 @@ async function handleCallback(cq, chatId, userId) {
         break;
       case 'RINGING':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'RINGING' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
-        await setCooling(regNo, 3);
+        await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'ringing');
         break;
       case 'NOTCONN':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'NOT CONNECTED' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
-        await setCooling(regNo, 3);
+        await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'notConnected');
         break;
       case 'OUTAREA':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'OUT OF AREA' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
-        await setCooling(regNo, 3);
+        await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'outOfArea');
         break;
       case 'BUSY':
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'BUSY' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
-        await setCooling(regNo, 3);
+        await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 3 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'busy');
         break;
       case 'OTHER':
@@ -778,15 +789,10 @@ async function handleCallback(cq, chatId, userId) {
         const tempReviews = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
         const rvUpper = rv.toUpperCase();
         if (tempReviews.includes(rvUpper)) {
-          await updateLeadCells(rowNum, [
-            { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-            { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-            { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-            { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
-          ]);
+          // FIX: Sheet me data RAKHO, sirf bot se hatao
           pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
           await deleteMessage(chatId, messageId);
-          await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 3 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
+          await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
           return;
         }
         pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
@@ -821,21 +827,17 @@ async function isRowExpired(rowNum, regNo) {
   const lock = await tempLocksCollection.findOne({ regNo });
   if (!lock) return false;
   if (lock.expiresAt < new Date()) {
-    const rowData = await getLeadRowData(rowNum);
-    const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
-    const tmp = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
-    if (tmp.includes(rv)) {
-      await updateLeadCells(rowNum, [
-        { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-        { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-        { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-        { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
-      ]);
-      await tempLocksCollection.deleteOne({ regNo });
-      const uc = leadUsers.get(regNo);
-      if (uc) { userLeads.delete(uc); leadUsers.delete(regNo); }
-      return true;
-    }
+    // FIX: 2 hours complete → Sheet se CLEAR karo, dusre user ko milega fresh
+    await updateLeadCells(rowNum, [
+      { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+      { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+      { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+      { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+    ]);
+    await tempLocksCollection.deleteOne({ regNo });
+    const uc = leadUsers.get(regNo);
+    if (uc) { userLeads.delete(uc); leadUsers.delete(regNo); }
+    return true;
   }
   return false;
 }
@@ -892,7 +894,9 @@ async function sendNext(chatId, sName) {
     const as = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]);
     const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]);
     const reg = safeStr(row[CONFIG.LEAD_COLS.REG_NO]);
-    if (st !== 'DONE' && st !== 'SENT' && as === '' && !coolingSet.has(reg) && rv === '') {
+    
+    // FIX: Sirf fresh leads lo (STAFF_NAME blank, REVIEW blank, STATUS blank/DONE nahi)
+    if (st !== 'DONE' && st !== 'SENT' && as === '' && rv === '' && !coolingSet.has(reg)) {
       pends.push({ row: i + 1, data: row });
     }
   }
@@ -916,12 +920,18 @@ async function sendNext(chatId, sName) {
     if (coolingSet.has(rn)) continue;
 
     const fresh = await getLeadRowData(lead.row);
-    if (safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE' ||
-        safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'SENT' ||
-        safeStr(fresh[CONFIG.LEAD_COLS.STAFF_NAME]) !== '' ||
-        safeStr(fresh[CONFIG.LEAD_COLS.REVIEW]) !== '') {
-      continue;
-    }
+    const freshStatus = safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
+    const freshStaff = safeStr(fresh[CONFIG.LEAD_COLS.STAFF_NAME]);
+    const freshReview = safeStr(fresh[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
+    
+    // Agar kisi ne DONE kar diya, skip karo
+    if (freshStatus === 'DONE') continue;
+    
+    // Agar kisi aur ne abhi SENT kar liya, skip karo
+    if (freshStatus === 'SENT' && freshStaff.toUpperCase() !== ns.toUpperCase()) continue;
+    
+    // Agar koi review hai (OTHER ya temp), skip karo
+    if (freshReview) continue;
 
     await updateLeadCells(lead.row, [
       { col: CONFIG.LEAD_COLS.STAFF_NAME, value: ns },
@@ -1058,6 +1068,7 @@ async function checkExpiredLocks() {
   for (const lock of expired) {
     const rowNum = rowMap[lock.regNo];
     if (rowNum) {
+      // FIX: 2 hours complete → Sheet CLEAR karo (fresh lead ban jaye)
       const rowData = await getLeadRowData(rowNum);
       const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
       if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv)) {
@@ -1102,7 +1113,9 @@ async function start() {
     console.log(`🚀 Server running on port ${PORT}`);
     await setWebhook();
   });
+  
   setInterval(() => checkReminders().catch(console.error), 60000);
+  setInterval(() => syncStaffFromSheet().catch(console.error), 120000);
 }
 
 start().catch(console.error);
