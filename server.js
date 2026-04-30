@@ -16,7 +16,7 @@ const CONFIG = {
   LEAD_COLS: {
     NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, MAKE: 4, REMARK: 5,
     STAFF_NAME: 6, STATUS: 7, REVIEW: 8, DATE: 9,
-    SENT_TIME: 10, DONE_TIME: 11, COUNT_DIALER: 12
+    SENT_TIME: 10, DONE_TIME: 11, COUNT_DIALER: 12, BOT_RESPONSE: 13
   },
   STAFF_COLS: {
     USER_NAME: 0, STAFF_NAME: 1, STAFF_NO: 2, ACTIVE_STATUS: 3,
@@ -30,34 +30,25 @@ const speedCache = {
   staffByUserName: new Map(),
   leads: new Map(),
   rowMap: new Map(),
-  lastSync: 0,
-  
+
   getStaffByChatId(chatId) {
     return this.staffByChatId.get(chatId);
   },
-  
+
   getStaffByUserName(userName) {
     return this.staffByUserName.get(userName.toLowerCase());
   },
-  
+
   setStaff(staff) {
     if (staff.chatId) this.staffByChatId.set(staff.chatId, staff);
     if (staff.userName) this.staffByUserName.set(staff.userName.toLowerCase(), staff);
   },
-  
+
   clearStaffCache() {
     this.staffByChatId.clear();
     this.staffByUserName.clear();
   },
-  
-  getLead(regNo) {
-    return this.leads.get(regNo);
-  },
-  
-  setLead(regNo, data) {
-    this.leads.set(regNo, data);
-  },
-  
+
   invalidateLeads() {
     this.leads.clear();
     this.rowMap.clear();
@@ -86,13 +77,12 @@ async function connectMongo() {
   await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
   await statsCollection.createIndex({ staffName: 1, date: 1 }).catch(() => {});
   console.log('✅ MongoDB connected');
-  
   await syncStaffFromSheet();
 }
 
-// ==================== STATS TRACKING ====================
+// ==================== STATS ====================
 async function incrementStat(staffName, field) {
-  const today = new Date().toLocaleDateString('en-GB');
+  const today = formatDate(new Date());
   try {
     await statsCollection.updateOne(
       { staffName, date: today },
@@ -111,14 +101,41 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
-// ==================== HELPERS ====================
+// ==================== FORMAT HELPERS ====================
 function safeStr(val) {
   return val == null ? '' : String(val).trim();
 }
 
+function formatDate(d = new Date()) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+  return `${day}-${month}-${year}`;
+}
+
+function formatTime(d = new Date()) {
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  hours = String(hours).padStart(2, '0');
+  return `${hours}:${minutes}:${seconds} ${ampm}`;
+}
+
 function formatDateTime(d = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${formatDate(d)} ${formatTime(d)}`;
+}
+
+function formatDuration(ms) {
+  if (ms <= 0) return '00:00:00';
+  const totalSeconds = Math.floor(ms / 1000);
+  const hrs = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+  const mins = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+  const secs = String(totalSeconds % 60).padStart(2, '0');
+  return `${hrs}:${mins}:${secs}`;
 }
 
 function parseSheetDate(val) {
@@ -133,35 +150,7 @@ function parseSheetDate(val) {
   return isNaN(d) ? new Date(9999, 0, 1) : d;
 }
 
-// ==================== INSTANT TELEGRAM API ====================
-const tgQueue = [];
-let tgProcessing = false;
-
-async function processTgQueue() {
-  if (tgProcessing || tgQueue.length === 0) return;
-  tgProcessing = true;
-  
-  while (tgQueue.length > 0) {
-    const { url, payload, resolve, reject } = tgQueue.shift();
-    try {
-      const res = await axios.post(url, payload, { timeout: 10000 });
-      resolve(res);
-    } catch (e) {
-      reject(e);
-    }
-    if (tgQueue.length > 0) await new Promise(r => setTimeout(r, 50));
-  }
-  
-  tgProcessing = false;
-}
-
-function tgPost(url, payload) {
-  return new Promise((resolve, reject) => {
-    tgQueue.push({ url, payload, resolve, reject });
-    processTgQueue();
-  });
-}
-
+// ==================== TELEGRAM API (NO QUEUE - INSTANT) ====================
 async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = false) {
   const payload = {
     chat_id: chatId,
@@ -171,22 +160,40 @@ async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = fa
   };
   if (removeKeyboard) payload.reply_markup = JSON.stringify({ remove_keyboard: true });
   else if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
-  
-  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload);
+
+  try {
+    return await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload, { timeout: 10000 });
+  } catch (e) {
+    console.error('sendMessage error:', e.message);
+    throw e;
+  }
 }
 
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'Markdown' };
   if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
-  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload);
+  try {
+    return await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload, { timeout: 10000 });
+  } catch (e) {
+    console.error('editMessage error:', e.message);
+    throw e;
+  }
 }
 
 async function answerCallbackQuery(queryId) {
-  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId });
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId }, { timeout: 5000 });
+  } catch (e) {
+    console.error('answerCallbackQuery error:', e.message);
+  }
 }
 
 async function deleteMessage(chatId, messageId) {
-  return tgPost(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId });
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId }, { timeout: 5000 });
+  } catch (e) {
+    console.error('deleteMessage error:', e.message);
+  }
 }
 
 // ==================== BUTTONS & MESSAGES ====================
@@ -222,6 +229,7 @@ function getLeadMsg(rowData) {
   const mk = rowData[CONFIG.LEAD_COLS.MAKE];
   const sa = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
   const st = safeStr(rowData[CONFIG.LEAD_COLS.STATUS]);
+  const botResp = safeStr(rowData[CONFIG.LEAD_COLS.BOT_RESPONSE]);
 
   let ds = safeStr(d2);
   const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
@@ -229,6 +237,7 @@ function getLeadMsg(rowData) {
   let msg = `📋 *NEW LEAD*\n\n👤 *Name:* ${nm || ''}\n📱 *Mobile:* ${mb || ''}\n🚗 *Reg:* ${rn || ''}\n📅 *Date:* ${ds}\n${re}\n🏭 *Make:* ${mk || ''}\n`;
   if (sa) msg += `👨‍💼 *Staff:* ${sa}\n`;
   if (st) msg += `📊 *Status:* ${st}\n`;
+  if (botResp) msg += `🤖 *Bot:* ${botResp}\n`;
   msg += '\nChoose action:';
   return msg;
 }
@@ -237,17 +246,17 @@ function getLeadMsg(rowData) {
 async function syncStaffFromSheet() {
   try {
     speedCache.clearStaffCache();
-    
+
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
       range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
     });
     const rows = res.data.values || [];
-    
+
     for (const row of rows) {
       const userName = safeStr(row[CONFIG.STAFF_COLS.USER_NAME]);
       if (!userName) continue;
-      
+
       const staffData = {
         userName: userName,
         name: safeStr(row[CONFIG.STAFF_COLS.STAFF_NAME]),
@@ -260,13 +269,13 @@ async function syncStaffFromSheet() {
         mail: safeStr(row[CONFIG.STAFF_COLS.MAIL]),
         updatedAt: new Date()
       };
-      
+
       await staffsCollection.updateOne(
         { userName: { $regex: `^${userName}$`, $options: 'i' } },
         { $set: staffData },
         { upsert: true }
       );
-      
+
       const dbStaff = await staffsCollection.findOne({ userName: { $regex: `^${userName}$`, $options: 'i' } });
       if (dbStaff) speedCache.setStaff(dbStaff);
     }
@@ -276,7 +285,7 @@ async function syncStaffFromSheet() {
   }
 }
 
-// ==================== WRITE CHAT ID BACK TO SHEET ====================
+// ==================== WRITE CHAT ID TO SHEET ====================
 async function updateStaffChatIdInSheet(userName, chatId) {
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -301,7 +310,7 @@ async function updateStaffChatIdInSheet(userName, chatId) {
       console.log(`📝 ChatID ${chatId} written to sheet for ${userName} at row ${rowNum}`);
     }
   } catch (e) {
-    console.error('Write ChatID to sheet error:', e.message);
+    console.error('Write ChatID error:', e.message);
   }
 }
 
@@ -309,7 +318,7 @@ async function updateStaffChatIdInSheet(userName, chatId) {
 async function getSheetData() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A1:M10000`
+    range: `${CONFIG.LEADS_SHEET_NAME}!A1:N10000`
   });
   return res.data.values || [];
 }
@@ -318,18 +327,17 @@ async function getRowMap() {
   if (speedCache.rowMap.size > 0) {
     return Object.fromEntries(speedCache.rowMap);
   }
-  
+
   const data = await getSheetData();
   const map = {};
-  
+
   for (let i = 1; i < data.length; i++) {
     const rn = safeStr(data[i][CONFIG.LEAD_COLS.REG_NO]);
     if (rn) {
       map[rn] = i + 1;
-      speedCache.setLead(rn, data[i]);
     }
   }
-  
+
   speedCache.rowMap = new Map(Object.entries(map));
   return map;
 }
@@ -337,7 +345,7 @@ async function getRowMap() {
 async function getLeadRowData(rowNum) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:M${rowNum}`
+    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:N${rowNum}`
   });
   return (res.data.values?.[0] || []).map(safeStr);
 }
@@ -347,7 +355,7 @@ async function updateLeadCells(rowNum, updates) {
     range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + u.col)}${rowNum}`,
     values: [[u.value]]
   }));
-  
+
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: CONFIG.SHEET_ID,
     resource: { valueInputOption: 'USER_ENTERED', data }
@@ -359,7 +367,7 @@ const processedMessages = new Map();
 function isDuplicate(key) {
   const now = Date.now();
   if (processedMessages.has(key)) {
-    if (now - processedMessages.get(key) < 30000) return true;
+    if (now - processedMessages.get(key) < 5000) return true;
   }
   processedMessages.set(key, now);
   for (const [k, v] of processedMessages) {
@@ -372,7 +380,7 @@ const rateLimits = new Map();
 function isRateLimited(userId) {
   const now = Date.now();
   const last = rateLimits.get(userId);
-  if (last && now - last < 500) return true;
+  if (last && now - last < 300) return true;
   rateLimits.set(userId, now);
   return false;
 }
@@ -388,30 +396,30 @@ function isFinalResponse(text) {
   const cb = ['baad me','baadme','bad me','badme','baad mein','bad mein','baad m','bad m','baadmein','baad mai','bad mai','baad me kro','bad me kro'];
   if (cb.some(x => t.includes(x))) return false;
 
-  if (/\b(?:already|alredy)\b/.test(t) && /\b(?:renew|renewed|done|taken|purchase|bought)\b/.test(t)) return true;
-  if (/\b(?:renew|policy|insurance)\b/.test(t) && /\b(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)\b/.test(t)) return true;
-  if (/\b(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))\b/.test(t)) return true;
-  if (/\b(?:ho\s*(?:gaya|gya|chuka))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
-  if (/\b(?:le\s*(?:liya|liye|li))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
-  if (/\b(?:pahle\s*se|pehle\s*se)\b/.test(t)) return true;
-  if (/\b(?:dont|don't|do not|never)\b/.test(t) && /\b(?:record|call|disturb|phone)\b/.test(t)) return true;
-  if (/\b(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)\b/.test(t)) return true;
-  if (/\b(?:sell|sold|sale|bech|beche|becha)\b/.test(t) && /\b(?:car|gadi|gaadi|vehicle)\b/.test(t)) return true;
-  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:bech|sell|sale|beche|becha)\b/.test(t) && /\b(?:di|diya|de|kar|chuka|gayi)\b/.test(t)) return true;
-  if (/\b(?:sold|sale)\b/.test(t) && /\b(?:long\s*time|1\s*year|2\s*year|months?\s*ago)\b/.test(t)) return true;
-  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:nahi|nhi|na|nai)\b/.test(t) && /\b(?:hai|h|rahi|available)\b/.test(t)) return true;
-  if (/\b(?:nahi|nhi|na|nahin|nai)\b/.test(t) && /\b(?:chahiye|lena|leni|jarurat|zarurat)\b/.test(t)) return true;
-  if (/\b(?:not|no)\b/.test(t) && /\b(?:interested|need|want|require|required)\b/.test(t)) return true;
-  if (/\b(?:mana|manaa)\b/.test(t) && /\b(?:kar|kar\s*di|diya|kiya)\b/.test(t)) return true;
-  if (/\b(?:dont|don't|do not)\b/.test(t) && /\b(?:want|need|require)\b/.test(t)) return true;
-  if (/\b(?:block|blacklist)\b/.test(t) && /\b(?:kar|karo|kro|kardo)\b/.test(t)) return true;
-  if (/\b(?:aage|aagey|age|aagay)\b/.test(t) && /\b(?:se|say)\b/.test(t) && /\b(?:mat|na)\b/.test(t) && /\b(?:karna|karo|karein)\b/.test(t)) return true;
-  if (/\b(?:band|bandh|bnd)\b/.test(t) && /\b(?:kardo|kar\s*do|kar\s*de)\b/.test(t)) return true;
-  if (/\b(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)\b/.test(t) && /\b(?:number|no|mobile|phone)\b/.test(t)) return true;
-  if (/\b(?:number|mobile|phone)\b/.test(t) && /\b(?:invalid|wrong|fake|not\s*working)\b/.test(t)) return true;
-  if (/\b(?:switch\s*off|switched\s*off)\b/.test(t) && /\b(?:permanent|always|forever|hai|h)\b/.test(t)) return true;
-  if (/\b(?:does\s*not|don't)\b/.test(t) && /\b(?:exist|live|work)\b/.test(t)) return true;
-  if (/\b(?:not\s*in\s*use|band|bandh)\b/.test(t)) return true;
+  if (/(?:already|alredy)/.test(t) && /(?:renew|renewed|done|taken|purchase|bought)/.test(t)) return true;
+  if (/(?:renew|policy|insurance)/.test(t) && /(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)/.test(t)) return true;
+  if (/(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))/.test(t)) return true;
+  if (/(?:ho\s*(?:gaya|gya|chuka))/.test(t) && /(?:hai|h)/.test(t)) return true;
+  if (/(?:le\s*(?:liya|liye|li))/.test(t) && /(?:hai|h)/.test(t)) return true;
+  if (/(?:pahle\s*se|pehle\s*se)/.test(t)) return true;
+  if (/(?:dont|don't|do not|never)/.test(t) && /(?:record|call|disturb|phone)/.test(t)) return true;
+  if (/(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)/.test(t)) return true;
+  if (/(?:sell|sold|sale|bech|beche|becha)/.test(t) && /(?:car|gadi|gaadi|vehicle)/.test(t)) return true;
+  if (/(?:gadi|car|gaadi)/.test(t) && /(?:bech|sell|sale|beche|becha)/.test(t) && /(?:di|diya|de|kar|chuka|gayi)/.test(t)) return true;
+  if (/(?:sold|sale)/.test(t) && /(?:long\s*time|1\s*year|2\s*year|months?\s*ago)/.test(t)) return true;
+  if (/(?:gadi|car|gaadi)/.test(t) && /(?:nahi|nhi|na|nai)/.test(t) && /(?:hai|h|rahi|available)/.test(t)) return true;
+  if (/(?:nahi|nhi|na|nahin|nai)/.test(t) && /(?:chahiye|lena|leni|jarurat|zarurat)/.test(t)) return true;
+  if (/(?:not|no)/.test(t) && /(?:interested|need|want|require|required)/.test(t)) return true;
+  if (/(?:mana|manaa)/.test(t) && /(?:kar|kar\s*di|diya|kiya)/.test(t)) return true;
+  if (/(?:dont|don't|do not)/.test(t) && /(?:want|need|require)/.test(t)) return true;
+  if (/(?:block|blacklist)/.test(t) && /(?:kar|karo|kro|kardo)/.test(t)) return true;
+  if (/(?:aage|aagey|age|aagay)/.test(t) && /(?:se|say)/.test(t) && /(?:mat|na)/.test(t) && /(?:karna|karo|karein)/.test(t)) return true;
+  if (/(?:band|bandh|bnd)/.test(t) && /(?:kardo|kar\s*do|kar\s*de)/.test(t)) return true;
+  if (/(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)/.test(t) && /(?:number|no|mobile|phone)/.test(t)) return true;
+  if (/(?:number|mobile|phone)/.test(t) && /(?:invalid|wrong|fake|not\s*working)/.test(t)) return true;
+  if (/(?:switch\s*off|switched\s*off)/.test(t) && /(?:permanent|always|forever|hai|h)/.test(t)) return true;
+  if (/(?:does\s*not|don't)/.test(t) && /(?:exist|live|work)/.test(t)) return true;
+  if (/(?:not\s*in\s*use|band|bandh)/.test(t)) return true;
   return false;
 }
 
@@ -531,6 +539,43 @@ async function clearCooling(regNo) {
   await tempLocksCollection.deleteOne({ regNo });
 }
 
+// ==================== BOT RESPONSE UPDATER (LIVE COOLING) ====================
+async function updateBotResponseLive() {
+  try {
+    const now = new Date();
+    const locks = await tempLocksCollection.find({ expiresAt: { $gt: now } }).toArray();
+    if (locks.length === 0) return;
+
+    const rowMap = await getRowMap();
+    const updates = [];
+
+    for (const lock of locks) {
+      const rowNum = rowMap[lock.regNo];
+      if (!rowNum) continue;
+
+      const remaining = lock.expiresAt - now;
+      const timerStr = formatDuration(remaining);
+      const expiryTime = formatTime(lock.expiresAt);
+
+      const botMsg = `⏱️ COOLING: ${timerStr} left | Resets @ ${expiryTime}`;
+
+      updates.push({
+        range: `${CONFIG.LEADS_SHEET_NAME}!N${rowNum}`,
+        values: [[botMsg]]
+      });
+    }
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: CONFIG.SHEET_ID,
+        resource: { valueInputOption: 'USER_ENTERED', data: updates }
+      });
+    }
+  } catch (e) {
+    console.error('Live cooling update error:', e.message);
+  }
+}
+
 // ==================== INSTANT HANDLERS ====================
 async function processUpdate(update) {
   if (!update.message && !update.callback_query) return;
@@ -539,7 +584,7 @@ async function processUpdate(update) {
   if (!chatId || !userId) return;
 
   if (update.callback_query) {
-    answerCallbackQuery(update.callback_query.id).catch(() => {});
+    answerCallbackQuery(update.callback_query.id);
   }
 
   let dupKey;
@@ -581,7 +626,7 @@ async function handleText(text, chatId, userId) {
         await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons());
         return;
       }
-      
+
       let staff = speedCache.getStaffByChatId(chatId);
       if (!staff) staff = await staffsCollection.findOne({ chatId });
       const sn = staff ? staff.name : '';
@@ -602,7 +647,7 @@ async function handleText(text, chatId, userId) {
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
         await incrementStat(sn, 'otherReview');
       } else if (reminder) {
-        const tStr = reminder.time.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const tStr = formatTime(reminder.time);
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
         await remindersCollection.insertOne(reminder.data);
         await incrementStat(sn, 'reminders');
@@ -630,7 +675,7 @@ async function handleText(text, chatId, userId) {
 
   if (text === '/refresh') {
     await syncStaffFromSheet();
-    await sendMessage(chatId, '🔄 Staff data refreshed from Google Sheet!\n\nAb se naye ACTIVE/DEACTIVE status turant kaam karenge.', getMainButtons());
+    await sendMessage(chatId, '🔄 Staff data refreshed!', getMainButtons());
     return;
   }
 
@@ -647,9 +692,9 @@ async function handleText(text, chatId, userId) {
     );
     const updated = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
     const saved = updated && updated.chatId === chatId;
-    
+
     await updateStaffChatIdInSheet(text, chatId);
-    
+
     await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
     speedCache.setStaff({ ...loginStaff, chatId });
     return;
@@ -691,7 +736,7 @@ async function handleCallback(cq, chatId, userId) {
       staff = await staffsCollection.findOne({ chatId });
       if (staff) speedCache.setStaff(staff);
     }
-    
+
     if (!staff) { await sendMessage(chatId, '❌ Session expired. Send /start', getMainButtons()); return; }
     if (safeStr(staff.activeStatus).toUpperCase() !== 'ACTIVE') { await sendMessage(chatId, '❌ NOT ACTIVE. Contact admin.', getMainButtons()); return; }
 
@@ -712,7 +757,8 @@ async function handleCallback(cq, chatId, userId) {
       await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
     }
 
-    const tStr = formatDateTime();
+    const currentDate = formatDate();
+    const currentTime = formatTime();
 
     switch (act) {
       case 'CALL': {
@@ -739,66 +785,109 @@ async function handleCallback(cq, chatId, userId) {
       case 'REVIEW':
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n📝 *Select Review:*', getReviewButtons(regNo));
         break;
-      case 'RINGING':
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'RINGING' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+      case 'RINGING': {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.REVIEW, value: 'RINGING' },
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }
+        ]);
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        const expiry = new Date(Date.now() + 2 * 3600000);
+        const botResp = `⏱️ RINGING | 2Hr cooling till ${formatTime(expiry)}`;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'ringing');
         break;
-      case 'NOTCONN':
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'NOT CONNECTED' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+      }
+      case 'NOTCONN': {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.REVIEW, value: 'NOT CONNECTED' },
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }
+        ]);
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        const expiry = new Date(Date.now() + 2 * 3600000);
+        const botResp = `⏱️ NOT CONNECTED | 2Hr cooling till ${formatTime(expiry)}`;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'notConnected');
         break;
-      case 'OUTAREA':
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'OUT OF AREA' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+      }
+      case 'OUTAREA': {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.REVIEW, value: 'OUT OF AREA' },
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }
+        ]);
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        const expiry = new Date(Date.now() + 2 * 3600000);
+        const botResp = `⏱️ OUT OF AREA | 2Hr cooling till ${formatTime(expiry)}`;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'outOfArea');
         break;
-      case 'BUSY':
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.REVIEW, value: 'BUSY' }, { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+      }
+      case 'BUSY': {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.REVIEW, value: 'BUSY' },
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }
+        ]);
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        const expiry = new Date(Date.now() + 2 * 3600000);
+        const botResp = `⏱️ BUSY | 2Hr cooling till ${formatTime(expiry)}`;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'busy');
         break;
-      case 'OTHER':
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
+      }
+      case 'OTHER': {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName },
+          { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: `🔐 OTHER | Permanent Lock by ${sName}` }
+        ]);
         pendingReviews.set(chatId, { regNo, messageId });
         userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n✏️ *Type review & send*\n\n💡 Examples:\n• 1 ghante baad call kro\n• kal call kro\n• 28 ko call kro\n• sunday ko call kro\n• call disconnect', null);
         await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
         break;
+      }
       case 'DONE': {
         const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
         if (!rv) { await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', getMainButtons()); return; }
-        const currentStatus = safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
-        if (currentStatus === 'DONE') {
-          await sendMessage(chatId, '⚠️ Already marked DONE!', getMainButtons());
-          return;
-        }
+
         const tempReviews = ['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'];
         const rvUpper = rv.toUpperCase();
+
         if (tempReviews.includes(rvUpper)) {
-          // FIX: Sheet me data RAKHO, sirf bot se hatao
+          // Temp review: Sheet me DONE fill karo + BOT RESPONSE update
+          const doneMsg = `✅ ${rvUpper} DONE by ${sName} @ ${currentTime} | Cooling: 2Hr`;
+          await updateLeadCells(rowNum, [
+            { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
+            { col: CONFIG.LEAD_COLS.DONE_TIME, value: currentTime },
+            { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
+          ]);
           pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
           await deleteMessage(chatId, messageId);
           await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
+          await incrementStat(sName, 'done');
           return;
         }
+
+        // OTHER review: Sheet me DONE fill karo
+        const doneMsg = `✅ OTHER DONE by ${sName} @ ${currentTime}`;
         pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
-        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' }, { col: CONFIG.LEAD_COLS.DONE_TIME, value: tStr }]);
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
+          { col: CONFIG.LEAD_COLS.DONE_TIME, value: currentTime },
+          { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
+        ]);
         const updatedRow = await getLeadRowData(rowNum);
-        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${tStr}`, null);
+        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${currentTime}`, null);
         await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
         await incrementStat(sName, 'done');
         break;
@@ -810,7 +899,9 @@ async function handleCallback(cq, chatId, userId) {
           { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
           { col: CONFIG.LEAD_COLS.STATUS, value: '' },
           { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-          { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+          { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
+          { col: CONFIG.LEAD_COLS.DATE, value: '' },
+          { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
         ]);
         pendingReviews.delete(chatId); await clearCooling(regNo); userLeads.delete(chatId); leadUsers.delete(regNo);
         await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());
@@ -827,12 +918,14 @@ async function isRowExpired(rowNum, regNo) {
   const lock = await tempLocksCollection.findOne({ regNo });
   if (!lock) return false;
   if (lock.expiresAt < new Date()) {
-    // FIX: 2 hours complete → Sheet se CLEAR karo, dusre user ko milega fresh
+    // 2 hours complete: Sheet CLEAR karo, fresh lead banao
     await updateLeadCells(rowNum, [
       { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
       { col: CONFIG.LEAD_COLS.STATUS, value: '' },
       { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-      { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
+      { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
+      { col: CONFIG.LEAD_COLS.DATE, value: '' },
+      { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
     ]);
     await tempLocksCollection.deleteOne({ regNo });
     const uc = leadUsers.get(regNo);
@@ -894,8 +987,7 @@ async function sendNext(chatId, sName) {
     const as = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]);
     const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]);
     const reg = safeStr(row[CONFIG.LEAD_COLS.REG_NO]);
-    
-    // FIX: Sirf fresh leads lo (STAFF_NAME blank, REVIEW blank, STATUS blank/DONE nahi)
+
     if (st !== 'DONE' && st !== 'SENT' && as === '' && rv === '' && !coolingSet.has(reg)) {
       pends.push({ row: i + 1, data: row });
     }
@@ -914,7 +1006,9 @@ async function sendNext(chatId, sName) {
     return;
   }
 
-  const ts = formatDateTime();
+  const currentDate = formatDate();
+  const currentTime = formatTime();
+
   for (const lead of pends) {
     const rn = safeStr(lead.data[CONFIG.LEAD_COLS.REG_NO]);
     if (coolingSet.has(rn)) continue;
@@ -923,20 +1017,16 @@ async function sendNext(chatId, sName) {
     const freshStatus = safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
     const freshStaff = safeStr(fresh[CONFIG.LEAD_COLS.STAFF_NAME]);
     const freshReview = safeStr(fresh[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
-    
-    // Agar kisi ne DONE kar diya, skip karo
+
     if (freshStatus === 'DONE') continue;
-    
-    // Agar kisi aur ne abhi SENT kar liya, skip karo
     if (freshStatus === 'SENT' && freshStaff.toUpperCase() !== ns.toUpperCase()) continue;
-    
-    // Agar koi review hai (OTHER ya temp), skip karo
     if (freshReview) continue;
 
     await updateLeadCells(lead.row, [
       { col: CONFIG.LEAD_COLS.STAFF_NAME, value: ns },
       { col: CONFIG.LEAD_COLS.STATUS, value: 'SENT' },
-      { col: CONFIG.LEAD_COLS.SENT_TIME, value: ts }
+      { col: CONFIG.LEAD_COLS.SENT_TIME, value: currentTime },
+      { col: CONFIG.LEAD_COLS.DATE, value: currentDate }
     ]);
 
     const verify = await getLeadRowData(lead.row);
@@ -957,68 +1047,63 @@ async function sendLead(chatId, text, buttons) {
 }
 
 async function sendReport(chatId, sName) {
-  const today = new Date().toLocaleDateString('en-GB');
-  const sn = safeStr(sName).toUpperCase();
-  
+  const today = formatDate();
+  const sn = safeStr(sName);
+
   const todayStats = await statsCollection.findOne({ staffName: sName, date: today }) || {};
-  
+
   const allData = await getSheetData();
-  let totDone = 0, tLeads = 0, pend = 0, rev = 0;
-  
+  let totDone = 0, tLeads = 0, tCalls = 0, tWhatsApp = 0;
+  let tRinging = 0, tNotCon = 0, tOutArea = 0, tBusy = 0;
+  let tOther = 0, tReminders = 0;
+
   for (let i = 1; i < allData.length; i++) {
     const row = allData[i];
-    const staff = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]).toUpperCase();
+    const staff = safeStr(row[CONFIG.LEAD_COLS.STAFF_NAME]);
     if (staff !== sn) continue;
-    
+
     const st = safeStr(row[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
-    const dt = row[CONFIG.LEAD_COLS.DONE_TIME];
-    const sentTime = row[CONFIG.LEAD_COLS.SENT_TIME];
+    const dt = safeStr(row[CONFIG.LEAD_COLS.DATE]);
     const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
-    
-    if (st === 'DONE') {
-      totDone++;
-    }
-    
-    let workedToday = false;
-    if (sentTime) {
-      const sds = sentTime instanceof Date ? sentTime.toLocaleDateString('en-GB') : safeStr(sentTime).split(' ')[0];
-      if (sds === today) workedToday = true;
-    }
-    if (!workedToday && dt) {
-      const dds = dt instanceof Date ? dt.toLocaleDateString('en-GB') : safeStr(dt).split(' ')[0];
-      if (dds === today) workedToday = true;
-    }
-    if (workedToday) tLeads++;
-    
-    if (st !== 'DONE') {
-      if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv) || rv.length > 0) rev++;
-      else pend++;
+    const calls = parseInt(row[CONFIG.LEAD_COLS.COUNT_DIALER] || 0);
+
+    // Total Done (lifetime)
+    if (st === 'DONE') totDone++;
+
+    // Today's leads (DATE column match)
+    if (dt === today) {
+      tLeads++;
+      tCalls += calls;
+
+      if (rv === 'RINGING') tRinging++;
+      else if (rv === 'NOT CONNECTED') tNotCon++;
+      else if (rv === 'OUT OF AREA') tOutArea++;
+      else if (rv === 'BUSY') tBusy++;
+      else if (rv && !['RINGING','NOT CONNECTED','OUT OF AREA','BUSY'].includes(rv)) tOther++;
     }
   }
-  
-  const calls = todayStats.calls || 0;
-  const whatsapp = todayStats.whatsapp || 0;
-  const done = todayStats.done || 0;
-  const ringing = todayStats.ringing || 0;
-  const notConnected = todayStats.notConnected || 0;
-  const outOfArea = todayStats.outOfArea || 0;
-  const busy = todayStats.busy || 0;
-  const otherReview = todayStats.otherReview || 0;
-  const reminders = todayStats.reminders || 0;
-  const mixCount = ringing + notConnected + outOfArea + busy;
-  
-  const msg = `📊 *DAILY STATUS REPORT*\n👤 *Name:* ${sName}\n📅 *Date:* ${today}\n\n` +
-    `📞 *Total Call Count:* ${calls}\n` +
-    `💬 *Total WhatsApp Count:* ${whatsapp}\n` +
-    `✅ *Total Done Count:* ${done}\n` +
+
+  // Get WhatsApp and reminder counts from stats
+  tWhatsApp = todayStats.whatsapp || 0;
+  tReminders = todayStats.reminders || 0;
+
+  const mixCount = tRinging + tNotCon + tOutArea + tBusy;
+
+  const msg = `📊 *DAILY STATUS REPORT*\n👤 *Name:* ${sn}\n📅 *Date:* ${today}\n\n` +
+    `📞 *Total Call Count:* ${tCalls}\n` +
+    `💬 *Total WhatsApp Count:* ${tWhatsApp}\n` +
+    `✅ *Total Done Count:* ${totDone}\n` +
     `📋 *Total Lead Count:* ${tLeads}\n` +
     `🔄 *RINGING/NOT CON/OUT AREA/BUSY:* ${mixCount}\n` +
-    `📝 *Total Other Review Count:* ${otherReview}\n` +
-    `⏰ *Total Reminder Set Count:* ${reminders}\n` +
+    `📝 *Total Other Review Count:* ${tOther}\n` +
+    `⏰ *Total Reminder Set Count:* ${tReminders}\n` +
     `🏆 *All Over Done Count:* ${totDone}\n\n` +
-    `⏳ *Current Pending:* ${pend}\n` +
-    `📝 *Current Review:* ${rev}`;
-    
+    `📊 *Breakdown:*\n` +
+    `• RINGING: ${tRinging}\n` +
+    `• NOT CONNECTED: ${tNotCon}\n` +
+    `• OUT OF AREA: ${tOutArea}\n` +
+    `• BUSY: ${tBusy}`;
+
   await sendMessage(chatId, msg, getMainButtons());
 }
 
@@ -1043,11 +1128,13 @@ async function checkReminders() {
           await remindersCollection.updateOne({ _id: rem._id }, { $set: { fired: true } });
           continue;
         }
-        const ts = formatDateTime();
+        const currentDate = formatDate();
+        const currentTime = formatTime();
         await updateLeadCells(rowNum, [
           { col: CONFIG.LEAD_COLS.STAFF_NAME, value: rem.staffName },
           { col: CONFIG.LEAD_COLS.STATUS, value: 'SENT' },
-          { col: CONFIG.LEAD_COLS.SENT_TIME, value: ts }
+          { col: CONFIG.LEAD_COLS.SENT_TIME, value: currentTime },
+          { col: CONFIG.LEAD_COLS.DATE, value: currentDate }
         ]);
         userLeads.set(rem.chatId, rem.regNo);
         leadUsers.set(rem.regNo, rem.chatId);
@@ -1064,21 +1151,18 @@ async function checkReminders() {
 
 async function checkExpiredLocks() {
   const expired = await tempLocksCollection.find({ expiresAt: { $lt: new Date() } }).toArray();
-  const rowMap = await getRowMap();
   for (const lock of expired) {
+    const rowMap = await getRowMap();
     const rowNum = rowMap[lock.regNo];
     if (rowNum) {
-      // FIX: 2 hours complete → Sheet CLEAR karo (fresh lead ban jaye)
-      const rowData = await getLeadRowData(rowNum);
-      const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
-      if (['RINGING', 'NOT CONNECTED', 'OUT OF AREA', 'BUSY'].includes(rv)) {
-        await updateLeadCells(rowNum, [
-          { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-          { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-          { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-          { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' }
-        ]);
-      }
+      await updateLeadCells(rowNum, [
+        { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+        { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+        { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+        { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
+        { col: CONFIG.LEAD_COLS.DATE, value: '' },
+        { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
+      ]);
     }
     await tempLocksCollection.deleteOne({ _id: lock._id });
     const uc = leadUsers.get(lock.regNo);
@@ -1092,7 +1176,7 @@ app.post('/webhook', async (req, res) => {
   processUpdate(req.body);
 });
 
-app.get('/', (req, res) => res.send('✅ Lead Bot Running on Node.js - SPEED OPTIMIZED'));
+app.get('/', (req, res) => res.send('✅ Lead Bot Running on Node.js - INSTANT & STABLE'));
 
 // ==================== STARTUP ====================
 async function setWebhook() {
@@ -1113,9 +1197,10 @@ async function start() {
     console.log(`🚀 Server running on port ${PORT}`);
     await setWebhook();
   });
-  
+
   setInterval(() => checkReminders().catch(console.error), 60000);
   setInterval(() => syncStaffFromSheet().catch(console.error), 120000);
+  setInterval(() => updateBotResponseLive().catch(console.error), 30000);
 }
 
 start().catch(console.error);
