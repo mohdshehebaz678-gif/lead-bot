@@ -24,6 +24,13 @@ const CONFIG = {
   }
 };
 
+// ==================== IST TIMEZONE ====================
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function toIST(d = new Date()) {
+  return new Date(d.getTime() + IST_OFFSET_MS);
+}
+
 // ==================== SPEED CACHE ====================
 const speedCache = {
   staffByChatId: new Map(),
@@ -101,23 +108,25 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
-// ==================== FORMAT HELPERS ====================
+// ==================== FORMAT HELPERS (IST) ====================
 function safeStr(val) {
   return val == null ? '' : String(val).trim();
 }
 
 function formatDate(d = new Date()) {
+  const ist = toIST(d);
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = months[d.getMonth()];
-  const year = d.getFullYear();
+  const day = String(ist.getUTCDate()).padStart(2, '0');
+  const month = months[ist.getUTCMonth()];
+  const year = ist.getUTCFullYear();
   return `${day}-${month}-${year}`;
 }
 
 function formatTime(d = new Date()) {
-  let hours = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  const seconds = String(d.getSeconds()).padStart(2, '0');
+  const ist = toIST(d);
+  let hours = ist.getUTCHours();
+  const minutes = String(ist.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(ist.getUTCSeconds()).padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
   hours = hours ? hours : 12;
@@ -396,30 +405,30 @@ function isFinalResponse(text) {
   const cb = ['baad me','baadme','bad me','badme','baad mein','bad mein','baad m','bad m','baadmein','baad mai','bad mai','baad me kro','bad me kro'];
   if (cb.some(x => t.includes(x))) return false;
 
-  if (/(?:already|alredy)/.test(t) && /(?:renew|renewed|done|taken|purchase|bought)/.test(t)) return true;
-  if (/(?:renew|policy|insurance)/.test(t) && /(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)/.test(t)) return true;
-  if (/(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))/.test(t)) return true;
-  if (/(?:ho\s*(?:gaya|gya|chuka))/.test(t) && /(?:hai|h)/.test(t)) return true;
-  if (/(?:le\s*(?:liya|liye|li))/.test(t) && /(?:hai|h)/.test(t)) return true;
-  if (/(?:pahle\s*se|pehle\s*se)/.test(t)) return true;
-  if (/(?:dont|don't|do not|never)/.test(t) && /(?:record|call|disturb|phone)/.test(t)) return true;
-  if (/(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)/.test(t)) return true;
-  if (/(?:sell|sold|sale|bech|beche|becha)/.test(t) && /(?:car|gadi|gaadi|vehicle)/.test(t)) return true;
-  if (/(?:gadi|car|gaadi)/.test(t) && /(?:bech|sell|sale|beche|becha)/.test(t) && /(?:di|diya|de|kar|chuka|gayi)/.test(t)) return true;
-  if (/(?:sold|sale)/.test(t) && /(?:long\s*time|1\s*year|2\s*year|months?\s*ago)/.test(t)) return true;
-  if (/(?:gadi|car|gaadi)/.test(t) && /(?:nahi|nhi|na|nai)/.test(t) && /(?:hai|h|rahi|available)/.test(t)) return true;
-  if (/(?:nahi|nhi|na|nahin|nai)/.test(t) && /(?:chahiye|lena|leni|jarurat|zarurat)/.test(t)) return true;
-  if (/(?:not|no)/.test(t) && /(?:interested|need|want|require|required)/.test(t)) return true;
-  if (/(?:mana|manaa)/.test(t) && /(?:kar|kar\s*di|diya|kiya)/.test(t)) return true;
-  if (/(?:dont|don't|do not)/.test(t) && /(?:want|need|require)/.test(t)) return true;
-  if (/(?:block|blacklist)/.test(t) && /(?:kar|karo|kro|kardo)/.test(t)) return true;
-  if (/(?:aage|aagey|age|aagay)/.test(t) && /(?:se|say)/.test(t) && /(?:mat|na)/.test(t) && /(?:karna|karo|karein)/.test(t)) return true;
-  if (/(?:band|bandh|bnd)/.test(t) && /(?:kardo|kar\s*do|kar\s*de)/.test(t)) return true;
-  if (/(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)/.test(t) && /(?:number|no|mobile|phone)/.test(t)) return true;
-  if (/(?:number|mobile|phone)/.test(t) && /(?:invalid|wrong|fake|not\s*working)/.test(t)) return true;
-  if (/(?:switch\s*off|switched\s*off)/.test(t) && /(?:permanent|always|forever|hai|h)/.test(t)) return true;
-  if (/(?:does\s*not|don't)/.test(t) && /(?:exist|live|work)/.test(t)) return true;
-  if (/(?:not\s*in\s*use|band|bandh)/.test(t)) return true;
+  if (/\b(?:already|alredy)\b/.test(t) && /\b(?:renew|renewed|done|taken|purchase|bought)\b/.test(t)) return true;
+  if (/\b(?:renew|policy|insurance)\b/.test(t) && /\b(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)\b/.test(t)) return true;
+  if (/\b(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))\b/.test(t)) return true;
+  if (/\b(?:ho\s*(?:gaya|gya|chuka))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:le\s*(?:liya|liye|li))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:pahle\s*se|pehle\s*se)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not|never)\b/.test(t) && /\b(?:record|call|disturb|phone)\b/.test(t)) return true;
+  if (/\b(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)\b/.test(t)) return true;
+  if (/\b(?:sell|sold|sale|bech|beche|becha)\b/.test(t) && /\b(?:car|gadi|gaadi|vehicle)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:bech|sell|sale|beche|becha)\b/.test(t) && /\b(?:di|diya|de|kar|chuka|gayi)\b/.test(t)) return true;
+  if (/\b(?:sold|sale)\b/.test(t) && /\b(?:long\s*time|1\s*year|2\s*year|months?\s*ago)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:nahi|nhi|na|nai)\b/.test(t) && /\b(?:hai|h|rahi|available)\b/.test(t)) return true;
+  if (/\b(?:nahi|nhi|na|nahin|nai)\b/.test(t) && /\b(?:chahiye|lena|leni|jarurat|zarurat)\b/.test(t)) return true;
+  if (/\b(?:not|no)\b/.test(t) && /\b(?:interested|need|want|require|required)\b/.test(t)) return true;
+  if (/\b(?:mana|manaa)\b/.test(t) && /\b(?:kar|kar\s*di|diya|kiya)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not)\b/.test(t) && /\b(?:want|need|require)\b/.test(t)) return true;
+  if (/\b(?:block|blacklist)\b/.test(t) && /\b(?:kar|karo|kro|kardo)\b/.test(t)) return true;
+  if (/\b(?:aage|aagey|age|aagay)\b/.test(t) && /\b(?:se|say)\b/.test(t) && /\b(?:mat|na)\b/.test(t) && /\b(?:karna|karo|karein)\b/.test(t)) return true;
+  if (/\b(?:band|bandh|bnd)\b/.test(t) && /\b(?:kardo|kar\s*do|kar\s*de)\b/.test(t)) return true;
+  if (/\b(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)\b/.test(t) && /\b(?:number|no|mobile|phone)\b/.test(t)) return true;
+  if (/\b(?:number|mobile|phone)\b/.test(t) && /\b(?:invalid|wrong|fake|not\s*working)\b/.test(t)) return true;
+  if (/\b(?:switch\s*off|switched\s*off)\b/.test(t) && /\b(?:permanent|always|forever|hai|h)\b/.test(t)) return true;
+  if (/\b(?:does\s*not|don't)\b/.test(t) && /\b(?:exist|live|work)\b/.test(t)) return true;
+  if (/\b(?:not\s*in\s*use|band|bandh)\b/.test(t)) return true;
   return false;
 }
 
@@ -864,7 +873,6 @@ async function handleCallback(cq, chatId, userId) {
         const rvUpper = rv.toUpperCase();
 
         if (tempReviews.includes(rvUpper)) {
-          // Temp review: Sheet me DONE fill karo + BOT RESPONSE update
           const doneMsg = `✅ ${rvUpper} DONE by ${sName} @ ${currentTime} | Cooling: 2Hr`;
           await updateLeadCells(rowNum, [
             { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
@@ -878,7 +886,6 @@ async function handleCallback(cq, chatId, userId) {
           return;
         }
 
-        // OTHER review: Sheet me DONE fill karo
         const doneMsg = `✅ OTHER DONE by ${sName} @ ${currentTime}`;
         pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
         await updateLeadCells(rowNum, [
@@ -918,7 +925,6 @@ async function isRowExpired(rowNum, regNo) {
   const lock = await tempLocksCollection.findOne({ regNo });
   if (!lock) return false;
   if (lock.expiresAt < new Date()) {
-    // 2 hours complete: Sheet CLEAR karo, fresh lead banao
     await updateLeadCells(rowNum, [
       { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
       { col: CONFIG.LEAD_COLS.STATUS, value: '' },
@@ -1067,10 +1073,8 @@ async function sendReport(chatId, sName) {
     const rv = safeStr(row[CONFIG.LEAD_COLS.REVIEW]).toUpperCase();
     const calls = parseInt(row[CONFIG.LEAD_COLS.COUNT_DIALER] || 0);
 
-    // Total Done (lifetime)
     if (st === 'DONE') totDone++;
 
-    // Today's leads (DATE column match)
     if (dt === today) {
       tLeads++;
       tCalls += calls;
@@ -1083,7 +1087,6 @@ async function sendReport(chatId, sName) {
     }
   }
 
-  // Get WhatsApp and reminder counts from stats
   tWhatsApp = todayStats.whatsapp || 0;
   tReminders = todayStats.reminders || 0;
 
