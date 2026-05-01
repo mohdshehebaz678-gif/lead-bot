@@ -286,7 +286,7 @@ function getLeadMsg(rowData) {
   const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
 
   let msg = '📋 *NEW LEAD*\n\n👤 *Name:* ' + (nm || '') + '\n📱 *Mobile:* ' + (mb || '') + '\n🚗 *Reg:* ' + (rn || '') + '\n📅 *Date:* ' + ds + '\n' + re + '\n🏭 *Make:* ' + (mk || '') + '\n';
-  if (sa) msg = msg + '👨‍💼 *Staff:* ' + sa + '\n';
+  if (sa) msg = msg + '👨-💼 *Staff:* ' + sa + '\n';
   if (st) msg = msg + '📊 *Status:* ' + st + '\n';
   if (botResp) msg = msg + '🤖 *Bot:* ' + botResp + '\n';
   msg = msg + '\nChoose action:';
@@ -667,7 +667,7 @@ function getBotResponse(type, data) {
     case 'COOLING':
       return '⏱️ ' + (data.reviewType || 'Active') + ' | 2Hr cooling | Resets @ ' + (data.resetTime || formatTime(new Date(Date.now() + 2 * 3600000)));
     case 'FINAL':
-      return '🏁 FINAL — No callback needed';
+      return '🏁 FINAL - No callback needed';
     case 'CALLBACK':
       return '⏰ Callback: ' + (data.reminderTime || 'Pending');
     case 'RE_DIAL':
@@ -675,7 +675,7 @@ function getBotResponse(type, data) {
     case 'DONE':
       return '✅ DONE';
     case 'AVAILABLE':
-      return '✅ AVAILABLE — Ready for re-dial';
+      return '✅ AVAILABLE - Ready for re-dial';
     default:
       return '';
   }
@@ -813,7 +813,7 @@ function isFinalResponse(text) {
 function detectReminder(text, chatId, staffName, regNo, leadData) {
   const now = new Date();
   const lt = text.toLowerCase().trim();
-  if (isFinalResponse(text)) return { time: null, type: 'FINAL RESPONSE — No callback needed', isFinal: true };
+  if (isFinalResponse(text)) return { time: null, type: 'FINAL RESPONSE - No callback needed', isFinal: true };
 
   let rt = null, type = '';
 
@@ -933,7 +933,7 @@ async function handleText(text, chatId, userId) {
       const sn = staff ? staff.name : '';
 
       const classification = classifyReview(text);
-      console.log('Smart classify: "' + text + '" → ' + classification.type + ' (' + classification.confidence + ')');
+      console.log('Smart classify: "' + text + '" -> ' + classification.type + ' (' + classification.confidence + ')');
 
       const rowMap = await getRowMap();
       const rowNum = rowMap[regNo];
@@ -954,7 +954,7 @@ async function handleText(text, chatId, userId) {
         ]);
 
         if (messageId) {
-          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n🏁 *FINAL — No callback needed*', getLeadButtons(regNo, false));
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n🏁 *FINAL - No callback needed*', getLeadButtons(regNo, false));
         }
         await sendMessage(chatId, '✅ Review: ' + text + '\n🔒 LOCKED: ' + sn + '\n\n🏁 *Final response detected.*\n⚠️ *Click DONE to complete!*', getMainButtons());
         await incrementStat(sn, 'otherReview');
@@ -1070,7 +1070,7 @@ async function sendWelcome(chatId, staff) {
   const un = safeStr(staff.userName);
   const st = safeStr(staff.activeStatus);
   const em = st.toUpperCase() === 'ACTIVE' ? '🟢' : '🔴';
-  const msg = '👋 *' + sn + '*\n🆔 `' + un + '`\n' + em + ' *' + st + '*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Bot auto-classifies\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE';
+  const msg = '👋 *' + sn + '*\n🆔 `' + un + '`\n' + em + ' *' + st + '*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Bot auto-classifies\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD -> 2️⃣ Call -> 3️⃣ REVIEW -> 4️⃣ DONE';
   await sendMessage(chatId, msg, getMainButtons());
 }
 
@@ -1104,7 +1104,7 @@ async function sendNext(chatId, sName) {
 
       const header = activeRem.fired 
         ? '⏰ *REMINDER TIME!*\n\n' 
-        : '🔒 *BLOCKED — Pending Reminder*\n⏰ ' + activeRem.reminderType + '\n⏱️ Fire at: ' + formatTime(activeRem.fireAt) + '\n\n';
+        : '🔒 *BLOCKED - Pending Reminder*\n⏰ ' + activeRem.reminderType + '\n⏱️ Fire at: ' + formatTime(activeRem.fireAt) + '\n\n';
 
       await sendLead(chatId, header + getLeadMsg(rowData), getLeadButtons(activeRem.regNo, false));
       return;
@@ -1325,7 +1325,7 @@ async function handleCallback(cq, chatId, userId) {
         const wName = safeStr(rowData[CONFIG.LEAD_COLS.NAME]);
         const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
         const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
-        const wMsg = '🚗 Hello ' + wName + '!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *' + wReg + '* ka insurance *' + wDs + '* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye';
+        const wMsg = '🚗 Hello ' + wName + '!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *' + wReg + '* ka insurance *' + wDs + '* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES - Quote ke liye\n✔ CALL - Direct baat karne ke liye';
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
         await sendMessage(chatId, '📱 *WhatsApp Ready*\n\n👤 ' + wName + '\n📱 +' + wDig + '\n🚗 ' + wReg + '\n\n👇 Tap button:', { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
 
