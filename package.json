@@ -1,17 +1,19 @@
 {
-  "name": "lead-bot",
-  "version": "1.0.0",
-  "description": "Telegram Lead Management Bot",
+  "name": "lead-management-bot",
+  "version": "2.0.0",
+  "description": "Telegram Lead Management Bot with MongoDB Master Architecture",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "setup": "node setup-mongodb.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "googleapis": "^134.0.0",
-    "mongodb": "^6.5.0"
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "express": "^4.18.0",
+    "googleapis": "^128.0.0",
+    "mongodb": "^6.3.0"
   },
   "engines": {
     "node": ">=18.0.0"
