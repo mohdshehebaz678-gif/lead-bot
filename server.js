@@ -286,23 +286,17 @@ function getLeadMsg(rowData) {
   let ds = safeStr(d2);
   const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
 
-  let msg = `📋 *NEW LEAD*
-
-👤 *Name:* ${nm || ''}
-📱 *Mobile:* ${mb || ''}
-🚗 *Reg:* ${rn || ''}
-📅 *Date:* ${ds}
-${re}
-🏭 *Make:* ${mk || ''}
-`;
-  if (sa) msg += `👨‍💼 *Staff:* ${sa}
-`;
-  if (st) msg += `📊 *Status:* ${st}
-`;
-  if (botResp) msg += `🤖 *Bot:* ${botResp}
-`;
-  msg += '
-Choose action:';
+  let msg = '\u2705 NEW LEAD' + '\n\n';
+  msg += '👤 *Name:* ' + (nm || '') + '\n';
+  msg += '📱 *Mobile:* ' + (mb || '') + '\n';
+  msg += '🚗 *Reg:* ' + (rn || '') + '\n';
+  msg += '📅 *Date:* ' + ds + '\n';
+  msg += re + '\n';
+  msg += '🏭 *Make:* ' + (mk || '') + '\n';
+  if (sa) msg += '👨\u200d💼 *Staff:* ' + sa + '\n';
+  if (st) msg += '📊 *Status:* ' + st + '\n';
+  if (botResp) msg += '🤖 *Bot:* ' + botResp + '\n';
+  msg += '\nChoose action:';
   return msg;
 }
 
@@ -1011,11 +1005,7 @@ async function handleText(text, chatId, userId) {
 
 🏁 *FINAL — No callback needed*', getLeadButtons(regNo, false));
         }
-        await sendMessage(chatId, `✅ Review: ${text}
-🔒 LOCKED: ${sn}
-
-🏁 *Final response detected.*
-⚠️ *Click DONE to complete!*`, getMainButtons());
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n🏁 *Final response detected.*\n⚠️ *Click DONE to complete!*`, getMainButtons());
         await incrementStat(sn, 'otherReview');
         pendingReviews.delete(chatId);
         return;
@@ -1040,20 +1030,12 @@ async function handleText(text, chatId, userId) {
 
         if (reminder) {
           const tStr = formatTime(reminder.time);
-          await sendMessage(chatId, `✅ Review: ${text}
-🔒 LOCKED: ${sn}
-
-${reminder.type}
-⏰ *Reminder: ${tStr}*
-🔒 *Lead blocked until reminder complete!*`, getMainButtons());
+          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n🔒 *Lead blocked until reminder complete!*`, getMainButtons());
           await remindersCollection.insertOne(reminder.data);
           await incrementStat(sn, 'reminders');
           await incrementStat(sn, 'otherReview');
         } else {
-          await sendMessage(chatId, `✅ Review: ${text}
-🔒 LOCKED: ${sn}
-
-⚠️ Click DONE to complete!`, getMainButtons());
+          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n⚠️ Click DONE to complete!`, getMainButtons());
           await incrementStat(sn, 'otherReview');
         }
         pendingReviews.delete(chatId);
@@ -1077,12 +1059,7 @@ ${reminder.type}
 ✏️ *Review:* ' + text, getLeadButtons(regNo, false));
       }
 
-      await sendMessage(chatId, `✅ Review: ${text}
-🔒 LOCKED: ${sn}
-
-🔄 *Auto re-dial: 2 hours*
-⏱️ *Resets @ ${resetTime}*
-⚠️ Click DONE when complete!`, getMainButtons());
+      await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n🔄 *Auto re-dial: 2 hours*\n⏱️ *Resets @ ${resetTime}*\n⚠️ Click DONE when complete!`, getMainButtons());
       await incrementStat(sn, 'otherReview');
       pendingReviews.delete(chatId);
       return;
@@ -1126,11 +1103,7 @@ Example: MIS-SHAIK-1843', null, true);
 
     await updateStaffChatIdInSheet(text, chatId);
 
-    await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}
-🆔 ID: ${text}
-💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}
-
-Click ▶️ START LEAD`, getMainButtons());
+    await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
     speedCache.setStaff({ ...loginStaff, chatId });
     return;
   }
@@ -1155,22 +1128,20 @@ async function sendWelcome(chatId, staff) {
   const un = safeStr(staff.userName);
   const st = safeStr(staff.activeStatus);
   const em = st.toUpperCase() === 'ACTIVE' ? '🟢' : '🔴';
-  const msg = `👋 *${sn}*
-🆔 \`${un}\`
-${em} *${st}*
-
-━━━━━━━━━━━━━━
-📌 *RULES*
-━━━━━━━━━━━━━━
-✅ Call / WhatsApp mandatory
-✅ Review before Done
-🔒 Locked until DONE
-⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)
-🔐 OTHER = Bot auto-classifies
-⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"
-
-💡 *STEPS*
-1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE`;
+  let msg = '👋 *' + sn + '*\n';
+  msg += '🆔 `' + un + '`\n';
+  msg += em + ' *' + st + '*\n\n';
+  msg += '━━━━━━━━━━━━━━\n';
+  msg += '📌 *RULES*\n';
+  msg += '━━━━━━━━━━━━━━\n';
+  msg += '✅ Call / WhatsApp mandatory\n';
+  msg += '✅ Review before Done\n';
+  msg += '🔒 Locked until DONE\n';
+  msg += '⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n';
+  msg += '🔐 OTHER = Bot auto-classifies\n';
+  msg += '⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n';
+  msg += '💡 *STEPS*\n';
+  msg += '1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE';
   await sendMessage(chatId, msg, getMainButtons());
 }
 
@@ -1203,14 +1174,8 @@ async function sendNext(chatId, sName) {
       leadUsers.set(activeRem.regNo, chatId);
 
       const header = activeRem.fired 
-        ? `⏰ *REMINDER TIME!*
-
-` 
-        : `🔒 *BLOCKED — Pending Reminder*
-⏰ ${activeRem.reminderType}
-⏱️ Fire at: ${formatTime(activeRem.fireAt)}
-
-`;
+        ? `⏰ *REMINDER TIME!*\n\n` 
+        : `🔒 *BLOCKED — Pending Reminder*\n⏰ ${activeRem.reminderType}\n⏱️ Fire at: ${formatTime(activeRem.fireAt)}\n\n`;
 
       await sendLead(chatId, header + getLeadMsg(rowData), getLeadButtons(activeRem.regNo, false));
       return;
@@ -1361,38 +1326,20 @@ async function sendReport(chatId, sName) {
 
   const mixCount = tRinging + tNotCon + tOutArea + tBusy;
 
-  const msg = `📊 *DAILY STATUS REPORT*
-👤 *Name:* ${sn}
-📅 *Date:* ${today}
-
-` +
-    `📞 *Total Call Count:* ${tCalls}
-` +
-    `💬 *Total WhatsApp Count:* ${tWhatsApp}
-` +
-    `✅ *Total Done Count:* ${totDone}
-` +
-    `📋 *Total Lead Count:* ${tLeads}
-` +
-    `⏭️ *Total Skip Count:* ${tSkips}
-` +
-    `🔄 *RINGING/NOT CON/OUT AREA/BUSY:* ${mixCount}
-` +
-    `📝 *Total Other Review Count:* ${tOther}
-` +
-    `⏰ *Total Reminder Set Count:* ${tReminders}
-` +
-    `🏆 *All Over Done Count:* ${totDone}
-
-` +
-    `📊 *Breakdown:*
-` +
-    `• RINGING: ${tRinging}
-` +
-    `• NOT CONNECTED: ${tNotCon}
-` +
-    `• OUT OF AREA: ${tOutArea}
-` +
+  const msg = `📊 *DAILY STATUS REPORT*\n👤 *Name:* ${sn}\n📅 *Date:* ${today}\n\n` +
+    `📞 *Total Call Count:* ${tCalls}\n` +
+    `💬 *Total WhatsApp Count:* ${tWhatsApp}\n` +
+    `✅ *Total Done Count:* ${totDone}\n` +
+    `📋 *Total Lead Count:* ${tLeads}\n` +
+    `⏭️ *Total Skip Count:* ${tSkips}\n` +
+    `🔄 *RINGING/NOT CON/OUT AREA/BUSY:* ${mixCount}\n` +
+    `📝 *Total Other Review Count:* ${tOther}\n` +
+    `⏰ *Total Reminder Set Count:* ${tReminders}\n` +
+    `🏆 *All Over Done Count:* ${totDone}\n\n` +
+    `📊 *Breakdown:*\n` +
+    `• RINGING: ${tRinging}\n` +
+    `• NOT CONNECTED: ${tNotCon}\n` +
+    `• OUT OF AREA: ${tOutArea}\n` +
     `• BUSY: ${tBusy}`;
 
   await sendMessage(chatId, msg, getMainButtons());
@@ -1440,13 +1387,7 @@ async function handleCallback(cq, chatId, userId) {
         let c = parseInt(rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || 0) + 1;
         let mDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
         if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.substring(2);
-        await sendMessage(chatId, `📞 *Tap to Call*
-
-👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}
-📱 +91${mDig}
-🔄 Count: ${c}
-
-👆 Tap number to dial`, getMainButtons());
+        await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n📱 +91${mDig}\n🔄 Count: ${c}\n\n👆 Tap number to dial`, getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1465,29 +1406,9 @@ async function handleCallback(cq, chatId, userId) {
         const wName = safeStr(rowData[CONFIG.LEAD_COLS.NAME]);
         const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
         const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
-        const wMsg = `🚗 Hello ${wName}!
-
-(*My Insurance Saathi*)
-
-Aapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.
-
-👉 Kya aap renewal karwana chahenge best price me?
-
-✅ Zero Dep
-✅ Cashless Claim
-✅ Best Company Options
-
-Reply karein:
-✔ YES – Quote ke liye
-✔ CALL – Direct baat karne ke liye`;
+        const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
-        await sendMessage(chatId, `📱 *WhatsApp Ready*
-
-👤 ${wName}
-📱 +${wDig}
-🚗 ${wReg}
-
-👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1508,9 +1429,7 @@ Reply karein:
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '
 
 ⚠️ RINGING', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ RINGING
-🔒 ${sName}
-⏱️ 2 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1538,9 +1457,7 @@ Reply karein:
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '
 
 ⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ NOT CONNECTED
-🔒 ${sName}
-⏱️ 2 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1568,9 +1485,7 @@ Reply karein:
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '
 
 ⚠️ OUT OF AREA', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ OUT OF AREA
-🔒 ${sName}
-⏱️ 2 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1598,9 +1513,7 @@ Reply karein:
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '
 
 ⚠️ BUSY', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ BUSY
-🔒 ${sName}
-⏱️ 2 HOURS to DONE!`, getMainButtons());
+        await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1640,9 +1553,7 @@ Reply karein:
 • 28 ko call kro
 • sunday ko call kro
 • call disconnect', null);
-        await sendMessage(chatId, `✏️ Type review & send
-🔐 PERMANENT LOCK: ${sName}
-/cancel to cancel`, null, true);
+        await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
         break;
       }
 
@@ -1663,10 +1574,7 @@ Reply karein:
         if (activeRem && activeRem.fired) {
           // Reminder time came, staff clicked DONE → COMPLETE
           // INSTANT
-          await sendMessage(chatId, `✅ Reminder completed!
-🔓 Unblocked.
-
-Click ▶️ START LEAD for new lead.`, getMainButtons());
+          await sendMessage(chatId, `✅ Reminder completed!\n🔓 Unblocked.\n\nClick ▶️ START LEAD for new lead.`, getMainButtons());
           await deleteMessage(chatId, messageId);
 
           // BACKGROUND
@@ -1702,11 +1610,7 @@ Click ▶️ START LEAD for new lead.`, getMainButtons());
         if (tempReviews.includes(rvUpper)) {
           // Temp review
           // INSTANT
-          await sendMessage(chatId, `✅ ${rvUpper} done!
-🔄 Lead reset.
-⏱️ 2 HOURS cooling period.
-
-Click ▶️ START LEAD`, getMainButtons());
+          await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
           await deleteMessage(chatId, messageId);
 
           // BACKGROUND
@@ -1772,70 +1676,11 @@ Click ▶️ START LEAD for next.', getMainButtons());
         const updatedRow = await getLeadRowData(rowNum);
         await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `
 
-✅ COMPLETED by ${sName} at ${currentTime}`, null);
-        break;
-      }
-
-      case 'SKIP': {
-        // Check if active reminder exists
-        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });
-        if (activeRem) {
-          await sendMessage(chatId, `❌ SKIP blocked! Active reminder pending.
+✅ COMPLETED by ${sName} at ${currentTime}`, null);\n        break;\n      }\n\n      case 'SKIP': {\n        // Check if active reminder exists\n        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });\n        if (activeRem) {\n          await sendMessage(chatId,`❌ SKIP blocked! Active reminder pending.
 ⏰ ${activeRem.reminderType}
 
-Complete the reminder first.`, getMainButtons());
-          return;
-        }
-
-        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
-        if (cr) { 
-          await sendMessage(chatId, `❌ SKIP blocked! Review done: ${cr}
-Click DONE.`, getMainButtons()); 
-          return; 
-        }
-
-        // INSTANT
-        await sendMessage(chatId, '⏭️ Skipped.
-Click ▶️ START LEAD', getMainButtons());
-
-        // BACKGROUND
-        setImmediate(async () => {
-          try {
-            await clearAssignment(regNo);
-            await clearCooling(regNo);
-
-            await updateLeadCells(rowNum, [
-              { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-              { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-              { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-              { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
-              { col: CONFIG.LEAD_COLS.DATE, value: '' },
-              { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
-            ]);
-            await incrementStat(sName, 'skips');
-          } catch (e) { console.error('SKIP background error:', e.message); }
-        });
-
-        pendingReviews.delete(chatId); 
-        userLeads.delete(chatId); 
-        leadUsers.delete(regNo);
-        break;
-      }
-    }
-  } catch (err) {
-    console.error('handleCallback ERROR:', err);
-    await sendMessage(chatId, '⚠️ Button error: ' + err.message, getMainButtons());
-  }
-}
-
-// ==================== IS ROW EXPIRED (MONGODB BASED) ====================
-async function isRowExpired(rowNum, regNo) {
-  const lock = await tempLocksCollection.findOne({ regNo });
-  if (!lock) return false;
-
-  const now = new Date();
-  if (lock.expiresAt < now) {
-    console.log(`⏱️ Cooling expired for ${regNo}, clearing row ${rowNum}`);
+Complete the reminder first.`, getMainButtons());\n          return;\n        }\n\n        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);\n        if (cr) {\n          await sendMessage(chatId,`❌ SKIP blocked! Review done: ${cr}
+Click DONE.`, getMainButtons()); \n          return;\n        }\n\n        // INSTANT\n        await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());\n\n        // BACKGROUND\n        setImmediate(async () => {\n          try {\n            await clearAssignment(regNo);\n            await clearCooling(regNo);\n\n            await updateLeadCells(rowNum, [\n              { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },\n              { col: CONFIG.LEAD_COLS.STATUS, value: '' },\n              { col: CONFIG.LEAD_COLS.REVIEW, value: '' },\n              { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },\n              { col: CONFIG.LEAD_COLS.DATE, value: '' },\n              { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }\n            ]);\n            await incrementStat(sName, 'skips');\n          } catch (e) { console.error('SKIP background error:', e.message); }\n        });\n\n        pendingReviews.delete(chatId);\n        userLeads.delete(chatId);\n        leadUsers.delete(regNo);\n        break;\n      }\n    }\n  } catch (err) {\n    console.error('handleCallback ERROR:', err);\n    await sendMessage(chatId, '⚠️ Button error: ' + err.message, getMainButtons());\n  }\n}\n\n// ==================== IS ROW EXPIRED (MONGODB BASED) ====================\nasync function isRowExpired(rowNum, regNo) {\n  const lock = await tempLocksCollection.findOne({ regNo });\n  if (!lock) return false;\n\n  const now = new Date();\n  if (lock.expiresAt < now) {\n    console.log(`⏱️ Cooling expired for ${regNo}, clearing row ${rowNum}`);
     // Clear assignment
     await clearAssignment(regNo);
     // Clear row in sheet (background)
@@ -1876,15 +1721,7 @@ async function checkReminders() {
 
       const mob = safeStr(rem.customerMobile).replace(/\D/g, '');
       const cleanMob = mob.startsWith('91') && mob.length > 10 ? mob.substring(2) : mob;
-      const msg = `⏰ *CALLBACK REMINDER*
-
-👤 *Customer:* ${rem.customerName}
-📱 *Mobile:* +${cleanMob}
-🚗 *Reg No:* ${rem.regNo}
-📝 *Note:* ${rem.reviewText}
-⏱️ *Type:* ${rem.reminderType}
-
-👉 *Call back now!*`;
+      const msg = `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
 
       const rowMap = await getRowMap();
       const rowNum = rowMap[rem.regNo];
@@ -1901,9 +1738,7 @@ async function checkReminders() {
           await sendMessage(rem.chatId, msg + '
 
 ⚠️ This lead was marked DONE earlier. Complete the reminder now.', getMainButtons());
-          await sendLead(rem.chatId, `⏰ *REMINDER TIME!*
-
-` + getLeadMsg(rowData), getLeadButtons(rem.regNo, false));
+          await sendLead(rem.chatId, `⏰ *REMINDER TIME!*\n\n` + getLeadMsg(rowData), getLeadButtons(rem.regNo, false));
           continue;
         }
 
