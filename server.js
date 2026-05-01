@@ -964,8 +964,7 @@ async function handleText(text, chatId, userId) {
   if (pending) {
     if (text === '/cancel') {
       pendingReviews.delete(chatId);
-      await sendMessage(chatId, '❌ Review cancelled.
-🔒 Lead locked.', getMainButtons());
+      await sendMessage(chatId, '❌ Review cancelled.\n🔒 Lead locked.', getMainButtons());
       return;
     }
     if (text.startsWith('/') || text === '▶️ START LEAD' || text === '📊 MY STATUS') {
@@ -1644,8 +1643,7 @@ async function handleCallback(cq, chatId, userId) {
 
         // OTHER review done
         // INSTANT
-        await sendMessage(chatId, '✅ Done!
-Click ▶️ START LEAD for next.', getMainButtons());
+        await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
 
         // BACKGROUND
         setImmediate(async () => {
@@ -1678,9 +1676,7 @@ Click ▶️ START LEAD for next.', getMainButtons());
         leadUsers.delete(regNo);
 
         const updatedRow = await getLeadRowData(rowNum);
-        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `
-
-✅ COMPLETED by ${sName} at ${currentTime}`, null);\n        break;\n      }\n\n      case 'SKIP': {\n        // Check if active reminder exists\n        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });\n        if (activeRem) {\n          await sendMessage(chatId,`❌ SKIP blocked! Active reminder pending.
+        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${currentTime}`, null);\n        break;\n      }\n\n      case 'SKIP': {\n        // Check if active reminder exists\n        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });\n        if (activeRem) {\n          await sendMessage(chatId,`❌ SKIP blocked! Active reminder pending.
 ⏰ ${activeRem.reminderType}
 
 Complete the reminder first.`, getMainButtons());\n          return;\n        }\n\n        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);\n        if (cr) {\n          await sendMessage(chatId,`❌ SKIP blocked! Review done: ${cr}
