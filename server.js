@@ -13,6 +13,7 @@ const CONFIG = {
   SHEET_ID: process.env.GOOGLE_SHEET_ID,
   LEADS_SHEET_NAME: 'Sheet1',
   STAFF_SHEET_NAME: 'STAFF NAME',
+  DAILING_COUNT_SHEET: 'DAILING COUNT',
   LEAD_COLS: {
     NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, MAKE: 4, REMARK: 5,
     STAFF_NAME: 6, STATUS: 7, REVIEW: 8, DATE: 9,
@@ -371,6 +372,49 @@ async function updateLeadCells(rowNum, updates) {
   });
 }
 
+// ==================== DAILING COUNT COPY ====================
+async function copyToDailingCount(rowData) {
+  try {
+    // Get current data from DAILING COUNT to find next empty row
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: CONFIG.SHEET_ID,
+      range: `${CONFIG.DAILING_COUNT_SHEET}!A:A`
+    });
+    const rows = res.data.values || [];
+    const nextRow = rows.length + 1;
+
+    // Prepare row data (A to N from Sheet1 + COPIED_AT in O)
+    const copyData = [
+      rowData[CONFIG.LEAD_COLS.NAME] || '',
+      rowData[CONFIG.LEAD_COLS.MOBILE] || '',
+      rowData[CONFIG.LEAD_COLS.REG_NO] || '',
+      rowData[CONFIG.LEAD_COLS.EXPIRED] || '',
+      rowData[CONFIG.LEAD_COLS.MAKE] || '',
+      rowData[CONFIG.LEAD_COLS.REMARK] || '',
+      rowData[CONFIG.LEAD_COLS.STAFF_NAME] || '',
+      rowData[CONFIG.LEAD_COLS.STATUS] || '',
+      rowData[CONFIG.LEAD_COLS.REVIEW] || '',
+      rowData[CONFIG.LEAD_COLS.DATE] || '',
+      rowData[CONFIG.LEAD_COLS.SENT_TIME] || '',
+      rowData[CONFIG.LEAD_COLS.DONE_TIME] || '',
+      rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || '',
+      rowData[CONFIG.LEAD_COLS.BOT_RESPONSE] || '',
+      formatDateTime() // COPIED_AT in column O
+    ];
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: CONFIG.SHEET_ID,
+      range: `${CONFIG.DAILING_COUNT_SHEET}!A${nextRow}:O${nextRow}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [copyData] }
+    });
+
+    console.log(`✅ Copied to DAILING COUNT row ${nextRow}: ${rowData[CONFIG.LEAD_COLS.REG_NO]}`);
+  } catch (e) {
+    console.error('Copy to DAILING COUNT error:', e.message);
+  }
+}
+
 // ==================== DEDUPLICATION & RATE LIMITING ====================
 const processedMessages = new Map();
 function isDuplicate(key) {
@@ -541,7 +585,13 @@ async function isInCooling(regNo) {
 }
 
 async function setCooling(regNo, hours = 2) {
-  await tempLocksCollection.updateOne({ regNo }, { $set: { regNo, expiresAt: new Date(Date.now() + hours * 3600000) } }, { upsert: true });
+  const expiresAt = new Date(Date.now() + hours * 3600000);
+  await tempLocksCollection.updateOne(
+    { regNo },
+    { $set: { regNo, expiresAt, createdAt: new Date() } },
+    { upsert: true }
+  );
+  console.log(`🔒 Cooling set for ${regNo}, expires at ${formatTime(expiresAt)}`);
 }
 
 async function clearCooling(regNo) {
@@ -873,12 +923,18 @@ async function handleCallback(cq, chatId, userId) {
         const rvUpper = rv.toUpperCase();
 
         if (tempReviews.includes(rvUpper)) {
+          // Temp review: Sheet me DONE fill karo + BOT RESPONSE update + COPY to DAILING COUNT
           const doneMsg = `✅ ${rvUpper} DONE by ${sName} @ ${currentTime} | Cooling: 2Hr`;
           await updateLeadCells(rowNum, [
             { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
             { col: CONFIG.LEAD_COLS.DONE_TIME, value: currentTime },
             { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
           ]);
+
+          // COPY TO DAILING COUNT before clearing
+          const finalRowData = await getLeadRowData(rowNum);
+          await copyToDailingCount(finalRowData);
+
           pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
           await deleteMessage(chatId, messageId);
           await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
@@ -886,6 +942,7 @@ async function handleCallback(cq, chatId, userId) {
           return;
         }
 
+        // OTHER review: Sheet me DONE fill karo + COPY to DAILING COUNT
         const doneMsg = `✅ OTHER DONE by ${sName} @ ${currentTime}`;
         pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
         await updateLeadCells(rowNum, [
@@ -893,6 +950,11 @@ async function handleCallback(cq, chatId, userId) {
           { col: CONFIG.LEAD_COLS.DONE_TIME, value: currentTime },
           { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
         ]);
+
+        // COPY TO DAILING COUNT before clearing
+        const finalRowData = await getLeadRowData(rowNum);
+        await copyToDailingCount(finalRowData);
+
         const updatedRow = await getLeadRowData(rowNum);
         await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${currentTime}`, null);
         await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
@@ -924,7 +986,11 @@ async function handleCallback(cq, chatId, userId) {
 async function isRowExpired(rowNum, regNo) {
   const lock = await tempLocksCollection.findOne({ regNo });
   if (!lock) return false;
-  if (lock.expiresAt < new Date()) {
+
+  const now = new Date();
+  if (lock.expiresAt < now) {
+    console.log(`⏱️ Cooling expired for ${regNo}, clearing row ${rowNum}`);
+    // 2 hours complete: Sheet CLEAR karo, fresh lead banao
     await updateLeadCells(rowNum, [
       { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
       { col: CONFIG.LEAD_COLS.STATUS, value: '' },
