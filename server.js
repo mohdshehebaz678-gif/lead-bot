@@ -113,7 +113,6 @@ async function connectMongo() {
   activeAssignmentsCollection = db.collection('activeAssignments');
   pendingSheetUpdatesCollection = db.collection('pendingSheetUpdates');
 
-  // Indexes
   await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
   await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
   await tempLocksCollection.createIndex({ regNo: 1 }).catch(() => {});
@@ -126,7 +125,7 @@ async function connectMongo() {
   await pendingSheetUpdatesCollection.createIndex({ createdAt: 1 }).catch(() => {});
   await pendingSheetUpdatesCollection.createIndex({ regNo: 1 }).catch(() => {});
 
-  console.log('✅ MongoDB connected');
+  console.log('MongoDB connected');
   await syncStaffFromSheet();
 }
 
@@ -162,7 +161,7 @@ function formatDate(d = new Date()) {
   const day = String(ist.getUTCDate()).padStart(2, '0');
   const month = months[ist.getUTCMonth()];
   const year = ist.getUTCFullYear();
-  return `${day}-${month}-${year}`;
+  return day + '-' + month + '-' + year;
 }
 
 function formatTime(d = new Date()) {
@@ -174,11 +173,11 @@ function formatTime(d = new Date()) {
   hours = hours % 12;
   hours = hours ? hours : 12;
   hours = String(hours).padStart(2, '0');
-  return `${hours}:${minutes}:${seconds} ${ampm}`;
+  return hours + ':' + minutes + ':' + seconds + ' ' + ampm;
 }
 
 function formatDateTime(d = new Date()) {
-  return `${formatDate(d)} ${formatTime(d)}`;
+  return formatDate(d) + ' ' + formatTime(d);
 }
 
 function formatDuration(ms) {
@@ -187,7 +186,7 @@ function formatDuration(ms) {
   const hrs = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
   const mins = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
   const secs = String(totalSeconds % 60).padStart(2, '0');
-  return `${hrs}:${mins}:${secs}`;
+  return hrs + ':' + mins + ':' + secs;
 }
 
 function parseSheetDate(val) {
@@ -214,7 +213,7 @@ async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = fa
   else if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
 
   try {
-    return await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`, payload, { timeout: 10000 });
+    return await axios.post('https://api.telegram.org/bot' + CONFIG.TOKEN + '/sendMessage', payload, { timeout: 10000 });
   } catch (e) {
     console.error('sendMessage error:', e.message);
     throw e;
@@ -225,7 +224,7 @@ async function editMessage(chatId, messageId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'Markdown' };
   if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup);
   try {
-    return await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/editMessageText`, payload, { timeout: 10000 });
+    return await axios.post('https://api.telegram.org/bot' + CONFIG.TOKEN + '/editMessageText', payload, { timeout: 10000 });
   } catch (e) {
     console.error('editMessage error:', e.message);
     throw e;
@@ -234,7 +233,7 @@ async function editMessage(chatId, messageId, text, replyMarkup = null) {
 
 async function answerCallbackQuery(queryId) {
   try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/answerCallbackQuery`, { callback_query_id: queryId }, { timeout: 5000 });
+    await axios.post('https://api.telegram.org/bot' + CONFIG.TOKEN + '/answerCallbackQuery', { callback_query_id: queryId }, { timeout: 5000 });
   } catch (e) {
     console.error('answerCallbackQuery error:', e.message);
   }
@@ -242,7 +241,7 @@ async function answerCallbackQuery(queryId) {
 
 async function deleteMessage(chatId, messageId) {
   try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/deleteMessage`, { chat_id: chatId, message_id: messageId }, { timeout: 5000 });
+    await axios.post('https://api.telegram.org/bot' + CONFIG.TOKEN + '/deleteMessage', { chat_id: chatId, message_id: messageId }, { timeout: 5000 });
   } catch (e) {
     console.error('deleteMessage error:', e.message);
   }
@@ -255,19 +254,19 @@ function getMainButtons() {
 
 function getLeadButtons(regNo, showSkip) {
   const b = [
-    [{ text: '📞 CALL', callback_data: `CALL_${regNo}` }, { text: '💬 WHATSAPP', callback_data: `WHATSAPP_${regNo}` }],
-    [{ text: '🔍 REVIEW', callback_data: `REVIEW_${regNo}` }, { text: '✅ DONE', callback_data: `DONE_${regNo}` }]
+    [{ text: '📞 CALL', callback_data: 'CALL_' + regNo }, { text: '💬 WHATSAPP', callback_data: 'WHATSAPP_' + regNo }],
+    [{ text: '🔍 REVIEW', callback_data: 'REVIEW_' + regNo }, { text: '✅ DONE', callback_data: 'DONE_' + regNo }]
   ];
-  if (showSkip) b.push([{ text: '⏭️ SKIP', callback_data: `SKIP_${regNo}` }]);
+  if (showSkip) b.push([{ text: '⏭️ SKIP', callback_data: 'SKIP_' + regNo }]);
   return { inline_keyboard: b };
 }
 
 function getReviewButtons(regNo) {
   return {
     inline_keyboard: [
-      [{ text: '📞 RINGING', callback_data: `RINGING_${regNo}` }, { text: '❌ NOT CONNECTED', callback_data: `NOTCONN_${regNo}` }],
-      [{ text: '📍 OUT OF AREA', callback_data: `OUTAREA_${regNo}` }, { text: '🔴 BUSY', callback_data: `BUSY_${regNo}` }],
-      [{ text: '✏️ OTHER', callback_data: `OTHER_${regNo}` }]
+      [{ text: '📞 RINGING', callback_data: 'RINGING_' + regNo }, { text: '❌ NOT CONNECTED', callback_data: 'NOTCONN_' + regNo }],
+      [{ text: '📍 OUT OF AREA', callback_data: 'OUTAREA_' + regNo }, { text: '🔴 BUSY', callback_data: 'BUSY_' + regNo }],
+      [{ text: '✏️ OTHER', callback_data: 'OTHER_' + regNo }]
     ]
   };
 }
@@ -286,17 +285,11 @@ function getLeadMsg(rowData) {
   let ds = safeStr(d2);
   const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
 
-  let msg = '\u2705 NEW LEAD' + '\n\n';
-  msg += '👤 *Name:* ' + (nm || '') + '\n';
-  msg += '📱 *Mobile:* ' + (mb || '') + '\n';
-  msg += '🚗 *Reg:* ' + (rn || '') + '\n';
-  msg += '📅 *Date:* ' + ds + '\n';
-  msg += re + '\n';
-  msg += '🏭 *Make:* ' + (mk || '') + '\n';
-  if (sa) msg += '👨\u200d💼 *Staff:* ' + sa + '\n';
-  if (st) msg += '📊 *Status:* ' + st + '\n';
-  if (botResp) msg += '🤖 *Bot:* ' + botResp + '\n';
-  msg += '\nChoose action:';
+  let msg = '📋 *NEW LEAD*\n\n👤 *Name:* ' + (nm || '') + '\n📱 *Mobile:* ' + (mb || '') + '\n🚗 *Reg:* ' + (rn || '') + '\n📅 *Date:* ' + ds + '\n' + re + '\n🏭 *Make:* ' + (mk || '') + '\n';
+  if (sa) msg = msg + '👨‍💼 *Staff:* ' + sa + '\n';
+  if (st) msg = msg + '📊 *Status:* ' + st + '\n';
+  if (botResp) msg = msg + '🤖 *Bot:* ' + botResp + '\n';
+  msg = msg + '\nChoose action:';
   return msg;
 }
 
@@ -304,30 +297,26 @@ function getLeadMsg(rowData) {
 const REVIEW_CATEGORIES = {
   RINGING: {
     keywords: ['ringing', 'ring', 'baj raha', 'baj rhi', 'baj rahi', 'utha nahi', 'pick nahi', 
-               'receive nahi', 'phone baj', 'रिंगिंग', 'बज रहा', 'उठा नहीं', 'baj rhi hai',
-               'ring ho rahi', 'ringing ja rahi', 'phone baj raha'],
+               'receive nahi', 'phone baj', 'baj rhi hai', 'ring ho rahi', 'ringing ja rahi', 'phone baj raha'],
     action: 'RINGING',
     cooling: 2
   },
   NOT_CONNECTED: {
     keywords: ['not connected', 'nahi lag raha', 'switch off', 'band hai', 'unreachable',
-               'network nahi', 'out of coverage', 'kat gaya', 'नहीं लग रहा', 'स्विच ऑफ',
-               'बंद है', 'नेटवर्क नहीं', 'dead number', 'invalid number', 'wrong number',
+               'network nahi', 'out of coverage', 'kat gaya', 'dead number', 'invalid number', 'wrong number',
                'phone band', 'mobile band', 'network problem', 'no signal', 'switched off'],
     action: 'NOT CONNECTED',
     cooling: 2
   },
   BUSY: {
     keywords: ['busy', 'occupied', 'doosre call pe', 'baat kar rahe', 'line busy',
-               'call waiting', 'बिजी', 'दूसरे कॉल पे', 'engaged', 'call pe hai',
-               'baad mein batayenge', 'abhi time nahi', 'busy hai'],
+               'call waiting', 'engaged', 'call pe hai', 'baad mein batayenge', 'abhi time nahi', 'busy hai'],
     action: 'BUSY',
     cooling: 2
   },
   OUT_AREA: {
     keywords: ['out of area', 'out of station', 'city se bahar', 'gaon gaya', 'village gaya',
-               'native gaya', 'dusre shehar', 'out of town', 'travel kar raha', 'trip pe hai',
-               'दूसरे शहर', 'गांव गया', 'बाहर है'],
+               'native gaya', 'dusre shehar', 'out of town', 'travel kar raha', 'trip pe hai'],
     action: 'OUT OF AREA',
     cooling: 2
   },
@@ -345,79 +334,49 @@ const REVIEW_CATEGORIES = {
 
 const TIME_WORDS = ['baad mein', 'bad me', 'kal', 'tomorrow', 'parso', 'sunday', 'monday',
   'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'subah', 'sham', 'raat',
-  'din', 'ghante', 'ghanta', 'minute', 'min', 'hour', 'hr', 'baje', 'baj', 'o\'clock',
+  'din', 'ghante', 'ghanta', 'minute', 'min', 'hour', 'hr', 'baje', 'baj', 'oclock',
   'am', 'pm', '10', '11', '12', '1', '2', '3', '4', '5', '6', '7', '8', '9',
   'call back', 'callback', 'phir call', 'dobara call', 'remind', 'next time',
   'thodi der', 'baad me call', 'bad me call', 'kal call', 'tomorrow call'];
 
 function normalizeText(text) {
   let t = text.toLowerCase().trim();
-  // Fix common misspellings
   const fixes = {
-    'nhi': 'nahi', 'nhi ': 'nahi ', ' nhi': ' nahi',
-    'bzy': 'busy', 'bzy ': 'busy ', ' bzy': ' busy',
-    'cll': 'call', 'cll ': 'call ', ' cll': ' call',
-    'phn': 'phone', 'phn ': 'phone ', ' phn': ' phone',
-    'utha': 'utha', 'utha ': 'utha ',
-    'krna': 'karna', 'krna ': 'karna ',
-    'kro': 'karo', 'kro ': 'karo ',
-    'kr': 'kar', 'kr ': 'kar ',
-    'mein': 'mein', 'me ': 'me ',
-    'hai': 'hai', 'h ': 'hai ',
-    'tho': 'toh', 'tho ': 'toh ',
-    'n': 'nahi', ' n ': ' nahi ',
-    'nhi': 'nahi', 'nai': 'nahi',
-    'nhi ': 'nahi ', ' nhi': ' nahi'
+    'nhi': 'nahi', 'bzy': 'busy', 'cll': 'call', 'phn': 'phone',
+    'krna': 'karna', 'kro': 'karo', 'kr': 'kar', 'mein': 'mein',
+    'hai': 'hai', 'tho': 'toh', 'n': 'nahi', 'nai': 'nahi'
   };
   for (const [wrong, right] of Object.entries(fixes)) {
     t = t.split(wrong).join(right);
   }
-  // Remove extra spaces and punctuation
-  t = t.replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/[.,!?;:\'"()-]/g, ' ').replace(/\s+/g, ' ').trim();
   return t;
 }
 
 function classifyReview(text) {
   const normalized = normalizeText(text);
-  const words = normalized.split(' ');
 
   let scores = { RINGING: 0, NOT_CONNECTED: 0, BUSY: 0, OUT_AREA: 0, FINAL: 0 };
 
-  // Score each category
   for (const [cat, data] of Object.entries(REVIEW_CATEGORIES)) {
     for (const keyword of data.keywords) {
       if (normalized.includes(keyword)) {
-        scores[cat] += keyword.split(' ').length; // Longer match = higher score
+        scores[cat] += keyword.split(' ').length;
       }
     }
   }
 
-  // Check for time words (indicates callback/reminder)
   const hasTimeWord = TIME_WORDS.some(w => normalized.includes(w));
-
-  // Check for negation + action (indicates final)
   const hasNegation = ['nahi', 'na', 'nai', 'not', 'no', 'dont', 'don\'t', 'mat'].some(w => normalized.includes(w));
   const hasAction = ['chahiye', 'lena', 'leni', 'karwana', 'karna', 'karo', 'karein'].some(w => normalized.includes(w));
 
-  // Context rules
-  if (hasNegation && hasAction) {
-    scores.FINAL += 5;
-  }
-
-  // "ho gaya" / "le li" patterns = final
+  if (hasNegation && hasAction) scores.FINAL += 5;
   if (normalized.includes('ho gaya') || normalized.includes('ho chuka') || 
       normalized.includes('le li') || normalized.includes('le liya') ||
       normalized.includes('kar li') || normalized.includes('kar liya') ||
-      normalized.includes('bech di') || normalized.includes('bech diya')) {
-    scores.FINAL += 5;
-  }
+      normalized.includes('bech di') || normalized.includes('bech diya')) scores.FINAL += 5;
+  if (normalized.includes('already') || normalized.includes('pahle se') || normalized.includes('pehle se')) scores.FINAL += 4;
 
-  // "already" = final
-  if (normalized.includes('already') || normalized.includes('pahle se') || normalized.includes('pehle se')) {
-    scores.FINAL += 4;
-  }
-
-  // Find winner
   let winner = null;
   let maxScore = 0;
   for (const [cat, score] of Object.entries(scores)) {
@@ -427,31 +386,23 @@ function classifyReview(text) {
     }
   }
 
-  // If no clear winner but has time words → CALLBACK
   if (!winner || maxScore < 2) {
-    if (hasTimeWord) {
-      return { type: 'CALLBACK', category: 'CALLBACK', confidence: 'medium' };
-    }
-    // Unclear but staff typed something = follow up needed
+    if (hasTimeWord) return { type: 'CALLBACK', category: 'CALLBACK', confidence: 'medium' };
     return { type: 'RE_DIAL', category: 'UNCLEAR', confidence: 'low' };
   }
 
-  // If winner is FINAL but has time words → CALLBACK (time overrides final)
   if (winner === 'FINAL' && hasTimeWord && maxScore < 5) {
     return { type: 'CALLBACK', category: 'CALLBACK', confidence: 'medium' };
   }
 
-  const catData = REVIEW_CATEGORIES[winner];
   if (winner === 'FINAL') {
     return { type: 'FINAL', category: 'FINAL', confidence: maxScore >= 3 ? 'high' : 'medium' };
   }
 
-  // If has time words with non-final → CALLBACK (explicit time given)
   if (hasTimeWord && winner !== 'FINAL') {
     return { type: 'CALLBACK', category: winner, confidence: 'high' };
   }
 
-  // Default: RE_DIAL (2Hr auto)
   return { type: 'RE_DIAL', category: winner, confidence: 'high' };
 }
 
@@ -462,7 +413,7 @@ async function syncStaffFromSheet() {
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.STAFF_SHEET_NAME}!A2:I1000`
+      range: CONFIG.STAFF_SHEET_NAME + '!A2:I1000'
     });
     const rows = res.data.values || [];
 
@@ -484,15 +435,15 @@ async function syncStaffFromSheet() {
       };
 
       await staffsCollection.updateOne(
-        { userName: { $regex: `^${userName}$`, $options: 'i' } },
+        { userName: { $regex: '^' + userName + '$', $options: 'i' } },
         { $set: staffData },
         { upsert: true }
       );
 
-      const dbStaff = await staffsCollection.findOne({ userName: { $regex: `^${userName}$`, $options: 'i' } });
+      const dbStaff = await staffsCollection.findOne({ userName: { $regex: '^' + userName + '$', $options: 'i' } });
       if (dbStaff) speedCache.setStaff(dbStaff);
     }
-    console.log(`✅ Synced ${rows.length} staff members`);
+    console.log('Synced ' + rows.length + ' staff members');
   } catch (e) {
     console.error('Staff sync error:', e.message);
   }
@@ -503,7 +454,7 @@ async function updateStaffChatIdInSheet(userName, chatId) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.STAFF_SHEET_NAME}!A2:A1000`
+      range: CONFIG.STAFF_SHEET_NAME + '!A2:A1000'
     });
     const rows = res.data.values || [];
     let rowNum = null;
@@ -516,11 +467,11 @@ async function updateStaffChatIdInSheet(userName, chatId) {
     if (rowNum) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: CONFIG.SHEET_ID,
-        range: `${CONFIG.STAFF_SHEET_NAME}!H${rowNum}`,
+        range: CONFIG.STAFF_SHEET_NAME + '!H' + rowNum,
         valueInputOption: 'USER_ENTERED',
         resource: { values: [[chatId]] }
       });
-      console.log(`📝 ChatID ${chatId} written to sheet for ${userName} at row ${rowNum}`);
+      console.log('ChatID ' + chatId + ' written to sheet for ' + userName + ' at row ' + rowNum);
     }
   } catch (e) {
     console.error('Write ChatID error:', e.message);
@@ -534,7 +485,7 @@ async function getSheetData() {
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A1:N5000`
+    range: CONFIG.LEADS_SHEET_NAME + '!A1:N5000'
   });
   const data = res.data.values || [];
   speedCache.setSheetData(data);
@@ -563,7 +514,7 @@ async function getRowMap() {
 async function getLeadRowData(rowNum) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:N${rowNum}`
+    range: CONFIG.LEADS_SHEET_NAME + '!A' + rowNum + ':N' + rowNum
   });
   return (res.data.values?.[0] || []).map(safeStr);
 }
@@ -589,12 +540,19 @@ async function processSheetBatch() {
     const pending = await pendingSheetUpdatesCollection.find({ retryCount: { $lt: 3 } }).limit(50).toArray();
     if (pending.length === 0) return;
 
-    const rowMap = await getRowMap();
-
-    const data = pending.map(p => ({
-      range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + p.updates.col)}${p.updates.rowNum || rowMap[p.regNo]}`,
-      values: [[p.updates.value]]
-    }));
+    const data = [];
+    for (const p of pending) {
+      const rowMap = await getRowMap();
+      const rowNum = rowMap[p.regNo];
+      if (rowNum) {
+        for (const u of p.updates) {
+          data.push({
+            range: CONFIG.LEADS_SHEET_NAME + '!' + String.fromCharCode(65 + u.col) + rowNum,
+            values: [[u.value]]
+          });
+        }
+      }
+    }
 
     if (data.length === 0) return;
 
@@ -606,7 +564,7 @@ async function processSheetBatch() {
     await pendingSheetUpdatesCollection.deleteMany({ _id: { $in: pending.map(p => p._id) } });
   } catch (e) {
     console.error('Sheet batch error:', e.message);
-    // Increment retry count
+    const pending = await pendingSheetUpdatesCollection.find({ retryCount: { $lt: 3 } }).limit(50).toArray();
     for (const p of pending) {
       await pendingSheetUpdatesCollection.updateOne(
         { _id: p._id },
@@ -617,7 +575,6 @@ async function processSheetBatch() {
 }
 
 async function updateLeadCells(rowNum, updates) {
-  // Queue for background sync
   for (const u of updates) {
     const regNo = await getRegNoFromRow(rowNum);
     if (regNo) {
@@ -630,7 +587,7 @@ async function getRegNoFromRow(rowNum) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.LEADS_SHEET_NAME}!C${rowNum}`
+      range: CONFIG.LEADS_SHEET_NAME + '!C' + rowNum
     });
     return safeStr(res.data.values?.[0]?.[0]);
   } catch (e) {
@@ -643,7 +600,7 @@ async function copyToDailingCount(rowData) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.DAILING_COUNT_SHEET}!A:A`
+      range: CONFIG.DAILING_COUNT_SHEET + '!A:A'
     });
     const rows = res.data.values || [];
     const nextRow = rows.length + 1;
@@ -663,17 +620,17 @@ async function copyToDailingCount(rowData) {
       rowData[CONFIG.LEAD_COLS.DONE_TIME] || '',
       rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || '',
       rowData[CONFIG.LEAD_COLS.BOT_RESPONSE] || '',
-      formatDateTime() // COPIED_AT in column O
+      formatDateTime()
     ];
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.DAILING_COUNT_SHEET}!A${nextRow}:O${nextRow}`,
+      range: CONFIG.DAILING_COUNT_SHEET + '!A' + nextRow + ':O' + nextRow,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [copyData] }
     });
 
-    console.log(`✅ Copied to DAILING COUNT row ${nextRow}: ${rowData[CONFIG.LEAD_COLS.REG_NO]}`);
+    console.log('Copied to DAILING COUNT row ' + nextRow + ': ' + rowData[CONFIG.LEAD_COLS.REG_NO]);
   } catch (e) {
     console.error('Copy to DAILING COUNT error:', e.message);
   }
@@ -697,7 +654,7 @@ async function setCooling(regNo, hours = 2) {
     { $set: { regNo, expiresAt, createdAt: new Date() } },
     { upsert: true }
   );
-  console.log(`🔒 Cooling set for ${regNo}, expires at ${formatTime(expiresAt)}`);
+  console.log('Cooling set for ' + regNo + ', expires at ' + formatTime(expiresAt));
 }
 
 async function clearCooling(regNo) {
@@ -705,16 +662,16 @@ async function clearCooling(regNo) {
 }
 
 // ==================== BOT RESPONSE FORMATTER (NEW) ====================
-function getBotResponse(type, data = {}) {
+function getBotResponse(type, data) {
   switch(type) {
     case 'COOLING':
-      return `⏱️ ${data.reviewType || 'Active'} | 2Hr cooling | Resets @ ${data.resetTime || formatTime(new Date(Date.now() + 2 * 3600000))}`;
+      return '⏱️ ' + (data.reviewType || 'Active') + ' | 2Hr cooling | Resets @ ' + (data.resetTime || formatTime(new Date(Date.now() + 2 * 3600000)));
     case 'FINAL':
       return '🏁 FINAL — No callback needed';
     case 'CALLBACK':
-      return `⏰ Callback: ${data.reminderTime || 'Pending'}`;
+      return '⏰ Callback: ' + (data.reminderTime || 'Pending');
     case 'RE_DIAL':
-      return `🔄 Re-dial: 2Hr auto | Resets @ ${data.resetTime || formatTime(new Date(Date.now() + 2 * 3600000))}`;
+      return '🔄 Re-dial: 2Hr auto | Resets @ ' + (data.resetTime || formatTime(new Date(Date.now() + 2 * 3600000)));
     case 'DONE':
       return '✅ DONE';
     case 'AVAILABLE':
@@ -729,7 +686,7 @@ const processedMessages = new Map();
 function isDuplicate(key) {
   const now = Date.now();
   if (processedMessages.has(key)) {
-    if (now - processedMessages.get(key) < 1000) return true; // Reduced from 5s to 1s
+    if (now - processedMessages.get(key) < 1000) return true;
   }
   processedMessages.set(key, now);
   for (const [k, v] of processedMessages) {
@@ -752,6 +709,44 @@ const pendingReviews = new Map();
 const userLeads = new Map();
 const leadUsers = new Map();
 
+// ==================== ATOMIC LEAD ASSIGNMENT (NEW) ====================
+async function atomicAssignLead(regNo, staffName, chatId) {
+  try {
+    await activeAssignmentsCollection.insertOne({
+      regNo,
+      staffName,
+      chatId,
+      assignedAt: new Date(),
+      status: 'SENT',
+      expiresAt: new Date(Date.now() + 4 * 3600000)
+    });
+    return true;
+  } catch (e) {
+    if (e.code === 11000) {
+      return false;
+    }
+    throw e;
+  }
+}
+
+async function getActiveAssignment(chatId) {
+  return await activeAssignmentsCollection.findOne({ chatId, status: { $ne: 'DONE' } });
+}
+
+async function getActiveAssignmentByRegNo(regNo) {
+  return await activeAssignmentsCollection.findOne({ regNo, status: { $ne: 'DONE' } });
+}
+
+async function clearAssignment(regNo) {
+  await activeAssignmentsCollection.deleteOne({ regNo });
+}
+
+async function updateAssignmentStatus(regNo, status, review) {
+  const update = { $set: { status, updatedAt: new Date() } };
+  if (review) update.$set.review = review;
+  await activeAssignmentsCollection.updateOne({ regNo }, update);
+}
+
 // ==================== INSTANT HANDLERS (NEW ARCHITECTURE) ====================
 async function processUpdate(update) {
   if (!update.message && !update.callback_query) return;
@@ -760,12 +755,12 @@ async function processUpdate(update) {
   if (!chatId || !userId) return;
 
   if (update.callback_query) {
-    answerCallbackQuery(update.callback_query.id); // Instant answer
+    answerCallbackQuery(update.callback_query.id);
   }
 
   let dupKey;
-  if (update.callback_query) dupKey = `d_${userId}_${update.callback_query.message.message_id}_${update.callback_query.data}`;
-  else dupKey = `d_${userId}_${update.message.message_id}`;
+  if (update.callback_query) dupKey = 'd_' + userId + '_' + update.callback_query.message.message_id + '_' + update.callback_query.data;
+  else dupKey = 'd_' + userId + '_' + update.message.message_id;
   if (isDuplicate(dupKey)) return;
   if (isRateLimited(userId)) return;
 
@@ -784,49 +779,49 @@ async function processUpdateAsync(update, chatId, userId) {
 
 // ==================== SMART REMINDER (ENHANCED) ====================
 function isFinalResponse(text) {
-  const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  const t = ' ' + text.toLowerCase().replace(/[.,!?;:\'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
   const cb = ['baad me','baadme','bad me','badme','baad mein','bad mein','baad m','bad m','baadmein','baad mai','bad mai','baad me kro','bad me kro'];
   if (cb.some(x => t.includes(x))) return false;
 
-  if (/(?:already|alredy)/.test(t) && /(?:renew|renewed|done|taken|purchase|bought)/.test(t)) return true;
-  if (/(?:renew|policy|insurance)/.test(t) && /(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)/.test(t)) return true;
-  if (/(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))/.test(t)) return true;
-  if (/(?:ho\s*(?:gaya|gya|chuka))/.test(t) && /(?:hai|h)/.test(t)) return true;
-  if (/(?:le\s*(?:liya|liye|li))/.test(t) && /(?:hai|h)/.test(t)) return true;
-  if (/(?:pahle\s*se|pehle\s*se)/.test(t)) return true;
-  if (/(?:dont|don't|do not|never)/.test(t) && /(?:record|call|disturb|phone)/.test(t)) return true;
-  if (/(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)/.test(t)) return true;
-  if (/(?:sell|sold|sale|bech|beche|becha)/.test(t) && /(?:car|gadi|gaadi|vehicle)/.test(t)) return true;
-  if (/(?:gadi|car|gaadi)/.test(t) && /(?:bech|sell|sale|beche|becha)/.test(t) && /(?:di|diya|de|kar|chuka|gayi)/.test(t)) return true;
-  if (/(?:sold|sale)/.test(t) && /(?:long\s*time|1\s*year|2\s*year|months?\s*ago)/.test(t)) return true;
-  if (/(?:gadi|car|gaadi)/.test(t) && /(?:nahi|nhi|na|nai)/.test(t) && /(?:hai|h|rahi|available)/.test(t)) return true;
-  if (/(?:nahi|nhi|na|nahin|nai)/.test(t) && /(?:chahiye|lena|leni|jarurat|zarurat)/.test(t)) return true;
-  if (/(?:not|no)/.test(t) && /(?:interested|need|want|require|required)/.test(t)) return true;
-  if (/(?:mana|manaa)/.test(t) && /(?:kar|kar\s*di|diya|kiya)/.test(t)) return true;
-  if (/(?:dont|don't|do not)/.test(t) && /(?:want|need|require)/.test(t)) return true;
-  if (/(?:block|blacklist)/.test(t) && /(?:kar|karo|kro|kardo)/.test(t)) return true;
-  if (/(?:aage|aagey|age|aagay)/.test(t) && /(?:se|say)/.test(t) && /(?:mat|na)/.test(t) && /(?:karna|karo|karein)/.test(t)) return true;
-  if (/(?:band|bandh|bnd)/.test(t) && /(?:kardo|kar\s*do|kar\s*de)/.test(t)) return true;
-  if (/(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)/.test(t) && /(?:number|no|mobile|phone)/.test(t)) return true;
-  if (/(?:number|mobile|phone)/.test(t) && /(?:invalid|wrong|fake|not\s*working)/.test(t)) return true;
-  if (/(?:switch\s*off|switched\s*off)/.test(t) && /(?:permanent|always|forever|hai|h)/.test(t)) return true;
-  if (/(?:does\s*not|don't)/.test(t) && /(?:exist|live|work)/.test(t)) return true;
-  if (/(?:not\s*in\s*use|band|bandh)/.test(t)) return true;
+  if (/\b(?:already|alredy)\b/.test(t) && /\b(?:renew|renewed|done|taken|purchase|bought)\b/.test(t)) return true;
+  if (/\b(?:renew|policy|insurance)\b/.test(t) && /\b(?:ho\s*(?:gaya|gya|chuka)|done|complete|le\s*li|mil\s*gaya|karwa\s*liya)\b/.test(t)) return true;
+  if (/\b(?:karwa?\s*(?:chuke|chuka|diye|diya|liye|li|liya|rakha))\b/.test(t)) return true;
+  if (/\b(?:ho\s*(?:gaya|gya|chuka))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:le\s*(?:liya|liye|li))\b/.test(t) && /\b(?:hai|h)\b/.test(t)) return true;
+  if (/\b(?:pahle\s*se|pehle\s*se)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not|never)\b/.test(t) && /\b(?:record|call|disturb|phone)\b/.test(t)) return true;
+  if (/\b(?:do\s*not\s*call|call\s*mat\s*karo|phone\s*mat\s*karna|call\s*na\s*karein)\b/.test(t)) return true;
+  if (/\b(?:sell|sold|sale|bech|beche|becha)\b/.test(t) && /\b(?:car|gadi|gaadi|vehicle)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:bech|sell|sale|beche|becha)\b/.test(t) && /\b(?:di|diya|de|kar|chuka|gayi)\b/.test(t)) return true;
+  if (/\b(?:sold|sale)\b/.test(t) && /\b(?:long\s*time|1\s*year|2\s*year|months?\s*ago)\b/.test(t)) return true;
+  if (/\b(?:gadi|car|gaadi)\b/.test(t) && /\b(?:nahi|nhi|na|nai)\b/.test(t) && /\b(?:hai|h|rahi|available)\b/.test(t)) return true;
+  if (/\b(?:nahi|nhi|na|nahin|nai)\b/.test(t) && /\b(?:chahiye|lena|leni|jarurat|zarurat)\b/.test(t)) return true;
+  if (/\b(?:not|no)\b/.test(t) && /\b(?:interested|need|want|require|required)\b/.test(t)) return true;
+  if (/\b(?:mana|manaa)\b/.test(t) && /\b(?:kar|kar\s*di|diya|kiya)\b/.test(t)) return true;
+  if (/\b(?:dont|don't|do not)\b/.test(t) && /\b(?:want|need|require)\b/.test(t)) return true;
+  if (/\b(?:block|blacklist)\b/.test(t) && /\b(?:kar|karo|kro|kardo)\b/.test(t)) return true;
+  if (/\b(?:aage|aagey|age|aagay)\b/.test(t) && /\b(?:se|say)\b/.test(t) && /\b(?:mat|na)\b/.test(t) && /\b(?:karna|karo|karein)\b/.test(t)) return true;
+  if (/\b(?:band|bandh|bnd)\b/.test(t) && /\b(?:kardo|kar\s*do|kar\s*de)\b/.test(t)) return true;
+  if (/\b(?:invalid|wrong|fake|not\s*exist|dead|band|bandh)\b/.test(t) && /\b(?:number|no|mobile|phone)\b/.test(t)) return true;
+  if (/\b(?:number|mobile|phone)\b/.test(t) && /\b(?:invalid|wrong|fake|not\s*working)\b/.test(t)) return true;
+  if (/\b(?:switch\s*off|switched\s*off)\b/.test(t) && /\b(?:permanent|always|forever|hai|h)\b/.test(t)) return true;
+  if (/\b(?:does\s*not|don't)\b/.test(t) && /\b(?:exist|live|work)\b/.test(t)) return true;
+  if (/\b(?:not\s*in\s*use|band|bandh)\b/.test(t)) return true;
   return false;
 }
 
 function detectReminder(text, chatId, staffName, regNo, leadData) {
   const now = new Date();
   const lt = text.toLowerCase().trim();
-  if (isFinalResponse(text)) return { time: null, type: '🏁 FINAL RESPONSE — No callback needed', isFinal: true };
+  if (isFinalResponse(text)) return { time: null, type: 'FINAL RESPONSE — No callback needed', isFinal: true };
 
   let rt = null, type = '';
 
   const minM = lt.match(/(?:call\s*back\s*|callback\s*|call\s*)(\d{1,2})\s*(?:min|minute|minutes|minat|mnt|minut|minuts)/);
-  if (minM && !rt) { rt = new Date(now.getTime() + parseInt(minM[1]) * 60000); type = `⏰ Call back in ${minM[1]} minute(s)`; }
+  if (minM && !rt) { rt = new Date(now.getTime() + parseInt(minM[1]) * 60000); type = '⏰ Call back in ' + minM[1] + ' minute(s)'; }
 
   const kalM = lt.match(/(?:kal|kl|कल)\s*(?:subah|morning|sham|evening|raat|night|din|दिन)?\s*(\d{1,2})\s*(?:baje|baj|baje|o'?clock|am|pm)?/);
-  if (kalM && !rt) { rt = new Date(now.getTime() + 86400000); rt.setHours(parseInt(kalM[1]), 0, 0, 0); type = `📅 Tomorrow at ${kalM[1]}:00 AM`; }
+  if (kalM && !rt) { rt = new Date(now.getTime() + 86400000); rt.setHours(parseInt(kalM[1]), 0, 0, 0); type = '📅 Tomorrow at ' + kalM[1] + ':00 AM'; }
 
   if (!rt && /(?:next\s*week|nest\s*week|agla\s*hafta|agla\s*week|agale\s*hafte)/.test(lt)) { rt = new Date(now.getTime() + 7 * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 Next week at 10:00 AM'; }
   if (!rt && /(?:next\s*month|agla\s*mahina|agla\s*month|agale\s*mahine|agla\s*mhina)/.test(lt)) { rt = new Date(now.getTime() + 30 * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 Next month at 10:00 AM'; }
@@ -837,7 +832,7 @@ function detectReminder(text, chatId, staffName, regNo, leadData) {
     const ms = lt.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/)[1];
     rt = new Date(now.getFullYear(), mn.indexOf(ms), parseInt(afterM[1]) + 1, 10, 0, 0);
     if (rt < now) rt.setFullYear(rt.getFullYear() + 1);
-    type = `📅 After ${afterM[1]} ${ms} at 10:00 AM`;
+    type = '📅 After ' + afterM[1] + ' ' + ms + ' at 10:00 AM';
   }
 
   const dateM = lt.match(/(\d{1,2})\s*(?:को|ko|co)/);
@@ -848,13 +843,13 @@ function detectReminder(text, chatId, staffName, regNo, leadData) {
     rt = new Date(ty, tm, td, 10, 0, 0);
     if (rt.getDate() !== td) rt = new Date(ty, tm + 1, 0, 10, 0, 0);
     if (rt < now) { tm++; if (tm > 11) { tm = 0; ty++; } rt = new Date(ty, tm, td, 10, 0, 0); }
-    type = `📅 Date: ${td}-${tm + 1}-${ty}`;
+    type = '📅 Date: ' + td + '-' + (tm + 1) + '-' + ty;
   }
 
   if (!rt) {
     const rel = [{ w: ['aaj','aj','आज'], o: 0 }, { w: ['kal','kl','कल'], o: 1 }, { w: ['parso','paraso','perso','परसों','परसो'], o: 2 }];
     for (const r of rel) {
-      if (r.w.some(x => lt.includes(x))) { rt = new Date(now.getTime() + r.o * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 ${r.w[0]} at 10:00 AM`; break; }
+      if (r.w.some(x => lt.includes(x))) { rt = new Date(now.getTime() + r.o * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 ' + r.w[0] + ' at 10:00 AM'; break; }
     }
   }
 
@@ -870,7 +865,7 @@ function detectReminder(text, chatId, staffName, regNo, leadData) {
         let du = w.c - now.getDay();
         if (du <= 0) du += 7;
         rt = new Date(now.getTime() + du * 86400000); rt.setHours(10, 0, 0, 0);
-        type = `📅 Next ${w.n[0]} at 10:00 AM`; break;
+        type = '📅 Next ' + w.n[0] + ' at 10:00 AM'; break;
       }
     }
   }
@@ -883,10 +878,10 @@ function detectReminder(text, chatId, staffName, regNo, leadData) {
       const mw = ['minute','minutes','min','mins','minat','मिनट','mint','mnt','minuts'];
       const dw = ['day','days','din','dino','दिन','dinn','deenn'];
       const ww = ['week','weeks','hafta','hafte','हफ्ता','हफ्ते','wek','weaks','haftey','hafte'];
-      if (hw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 3600000); type = `⏰ After ${n} hour(s)`; }
-      else if (mw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 60000); type = `⏰ After ${n} minute(s)`; }
-      else if (dw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 After ${n} day(s)`; }
-      else if (ww.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 7 * 86400000); rt.setHours(10, 0, 0, 0); type = `📅 After ${n} week(s)`; }
+      if (hw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 3600000); type = '⏰ After ' + n + ' hour(s)'; }
+      else if (mw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 60000); type = '⏰ After ' + n + ' minute(s)'; }
+      else if (dw.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 After ' + n + ' day(s)'; }
+      else if (ww.some(w => lt.includes(w))) { rt = new Date(now.getTime() + n * 7 * 86400000); rt.setHours(10, 0, 0, 0); type = '📅 After ' + n + ' week(s)'; }
     }
   }
 
@@ -918,45 +913,6 @@ function detectReminder(text, chatId, staffName, regNo, leadData) {
   return null;
 }
 
-// ==================== ATOMIC LEAD ASSIGNMENT (NEW) ====================
-async function atomicAssignLead(regNo, staffName, chatId) {
-  try {
-    await activeAssignmentsCollection.insertOne({
-      regNo,
-      staffName,
-      chatId,
-      assignedAt: new Date(),
-      status: 'SENT',
-      expiresAt: new Date(Date.now() + 4 * 3600000) // 4 hour TTL
-    });
-    return true;
-  } catch (e) {
-    if (e.code === 11000) {
-      // Duplicate key - already assigned
-      return false;
-    }
-    throw e;
-  }
-}
-
-async function getActiveAssignment(chatId) {
-  return await activeAssignmentsCollection.findOne({ chatId, status: { $ne: 'DONE' } });
-}
-
-async function getActiveAssignmentByRegNo(regNo) {
-  return await activeAssignmentsCollection.findOne({ regNo, status: { $ne: 'DONE' } });
-}
-
-async function clearAssignment(regNo) {
-  await activeAssignmentsCollection.deleteOne({ regNo });
-}
-
-async function updateAssignmentStatus(regNo, status, review = null) {
-  const update = { $set: { status, updatedAt: new Date() } };
-  if (review) update.$set.review = review;
-  await activeAssignmentsCollection.updateOne({ regNo }, update);
-}
-
 // ==================== HANDLE TEXT ====================
 async function handleText(text, chatId, userId) {
   const pending = pendingReviews.get(chatId);
@@ -976,11 +932,9 @@ async function handleText(text, chatId, userId) {
       if (!staff) staff = await staffsCollection.findOne({ chatId });
       const sn = staff ? staff.name : '';
 
-      // SMART CLASSIFY (NEW)
       const classification = classifyReview(text);
-      console.log(`Smart classify: "${text}" → ${classification.type} (${classification.confidence})`);
+      console.log('Smart classify: "' + text + '" → ' + classification.type + ' (' + classification.confidence + ')');
 
-      // Get fresh row data
       const rowMap = await getRowMap();
       const rowNum = rowMap[regNo];
       if (!rowNum) {
@@ -991,9 +945,7 @@ async function handleText(text, chatId, userId) {
 
       const freshRow = await getLeadRowData(rowNum);
 
-      // Handle based on classification
       if (classification.type === 'FINAL') {
-        // Final response - no callback
         await updateAssignmentStatus(regNo, 'REVIEWED', text);
         await updateLeadCells(rowNum, [
           { col: CONFIG.LEAD_COLS.REVIEW, value: text },
@@ -1002,18 +954,15 @@ async function handleText(text, chatId, userId) {
         ]);
 
         if (messageId) {
-          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '
-
-🏁 *FINAL — No callback needed*', getLeadButtons(regNo, false));
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n🏁 *FINAL — No callback needed*', getLeadButtons(regNo, false));
         }
-        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n🏁 *Final response detected.*\n⚠️ *Click DONE to complete!*`, getMainButtons());
+        await sendMessage(chatId, '✅ Review: ' + text + '\n🔒 LOCKED: ' + sn + '\n\n🏁 *Final response detected.*\n⚠️ *Click DONE to complete!*', getMainButtons());
         await incrementStat(sn, 'otherReview');
         pendingReviews.delete(chatId);
         return;
       }
 
       if (classification.type === 'CALLBACK') {
-        // Has explicit time - set reminder
         const reminder = detectReminder(text, chatId, sn, regNo, freshRow);
 
         await updateAssignmentStatus(regNo, 'REVIEWED', text);
@@ -1024,26 +973,23 @@ async function handleText(text, chatId, userId) {
         ]);
 
         if (messageId) {
-          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '
-
-✏️ *Review:* ' + text, getLeadButtons(regNo, false));
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false));
         }
 
         if (reminder) {
           const tStr = formatTime(reminder.time);
-          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n🔒 *Lead blocked until reminder complete!*`, getMainButtons());
+          await sendMessage(chatId, '✅ Review: ' + text + '\n🔒 LOCKED: ' + sn + '\n\n' + reminder.type + '\n⏰ *Reminder: ' + tStr + '*\n🔒 *Lead blocked until reminder complete!*', getMainButtons());
           await remindersCollection.insertOne(reminder.data);
           await incrementStat(sn, 'reminders');
           await incrementStat(sn, 'otherReview');
         } else {
-          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n⚠️ Click DONE to complete!`, getMainButtons());
+          await sendMessage(chatId, '✅ Review: ' + text + '\n🔒 LOCKED: ' + sn + '\n\n⚠️ Click DONE to complete!', getMainButtons());
           await incrementStat(sn, 'otherReview');
         }
         pendingReviews.delete(chatId);
         return;
       }
 
-      // RE_DIAL or UNCLEAR - auto 2Hr reminder
       const resetTime = formatTime(new Date(Date.now() + 2 * 3600000));
       await updateAssignmentStatus(regNo, 'REVIEWED', text);
       await setCooling(regNo, 2);
@@ -1055,12 +1001,10 @@ async function handleText(text, chatId, userId) {
       ]);
 
       if (messageId) {
-        await editMessage(chatId, messageId, getLeadMsg(freshRow) + '
-
-✏️ *Review:* ' + text, getLeadButtons(regNo, false));
+        await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false));
       }
 
-      await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n🔄 *Auto re-dial: 2 hours*\n⏱️ *Resets @ ${resetTime}*\n⚠️ Click DONE when complete!`, getMainButtons());
+      await sendMessage(chatId, '✅ Review: ' + text + '\n🔒 LOCKED: ' + sn + '\n\n🔄 *Auto re-dial: 2 hours*\n⏱️ *Resets @ ' + resetTime + '*\n⚠️ Click DONE when complete!', getMainButtons());
       await incrementStat(sn, 'otherReview');
       pendingReviews.delete(chatId);
       return;
@@ -1075,10 +1019,7 @@ async function handleText(text, chatId, userId) {
 
   if (text === '/start') {
     if (staff) await sendWelcome(chatId, staff);
-    else await sendMessage(chatId, '👋 Welcome!
-
-Send USER NAME to login.
-Example: MIS-SHAIK-1843', null, true);
+    else await sendMessage(chatId, '👋 Welcome!\n\nSend USER NAME to login.\nExample: MIS-SHAIK-1843', null, true);
     return;
   }
 
@@ -1096,15 +1037,15 @@ Example: MIS-SHAIK-1843', null, true);
     }
     await staffsCollection.updateOne({ chatId }, { $set: { chatId: '' } });
     await staffsCollection.updateOne(
-      { userName: { $regex: `^${text}$`, $options: 'i' } },
+      { userName: { $regex: '^' + text + '$', $options: 'i' } },
       { $set: { chatId } }
     );
-    const updated = await staffsCollection.findOne({ userName: { $regex: `^${text}$`, $options: 'i' } });
+    const updated = await staffsCollection.findOne({ userName: { $regex: '^' + text + '$', $options: 'i' } });
     const saved = updated && updated.chatId === chatId;
 
     await updateStaffChatIdInSheet(text, chatId);
 
-    await sendMessage(chatId, `✅ Switched to: ${loginStaff.name}\n🆔 ID: ${text}\n💾 ChatID Saved: ${saved ? 'YES ✅' : 'NO ❌'}\n\nClick ▶️ START LEAD`, getMainButtons());
+    await sendMessage(chatId, '✅ Switched to: ' + loginStaff.name + '\n🆔 ID: ' + text + '\n💾 ChatID Saved: ' + (saved ? 'YES ✅' : 'NO ❌') + '\n\nClick ▶️ START LEAD', getMainButtons());
     speedCache.setStaff({ ...loginStaff, chatId });
     return;
   }
@@ -1129,26 +1070,13 @@ async function sendWelcome(chatId, staff) {
   const un = safeStr(staff.userName);
   const st = safeStr(staff.activeStatus);
   const em = st.toUpperCase() === 'ACTIVE' ? '🟢' : '🔴';
-  let msg = '👋 *' + sn + '*\n';
-  msg += '🆔 `' + un + '`\n';
-  msg += em + ' *' + st + '*\n\n';
-  msg += '━━━━━━━━━━━━━━\n';
-  msg += '📌 *RULES*\n';
-  msg += '━━━━━━━━━━━━━━\n';
-  msg += '✅ Call / WhatsApp mandatory\n';
-  msg += '✅ Review before Done\n';
-  msg += '🔒 Locked until DONE\n';
-  msg += '⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n';
-  msg += '🔐 OTHER = Bot auto-classifies\n';
-  msg += '⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n';
-  msg += '💡 *STEPS*\n';
-  msg += '1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE';
+  const msg = '👋 *' + sn + '*\n🆔 `' + un + '`\n' + em + ' *' + st + '*\n\n━━━━━━━━━━━━━━\n📌 *RULES*\n━━━━━━━━━━━━━━\n✅ Call / WhatsApp mandatory\n✅ Review before Done\n🔒 Locked until DONE\n⏱️ 2Hr expiry (RINGING / BUSY / NOT CON / OUT AREA)\n🔐 OTHER = Bot auto-classifies\n⏰ Smart Reminder: "1 ghante baad", "kal", "28 ko"\n\n💡 *STEPS*\n1️⃣ START LEAD → 2️⃣ Call → 3️⃣ REVIEW → 4️⃣ DONE';
   await sendMessage(chatId, msg, getMainButtons());
 }
 
 // ==================== SEND NEXT (ATOMIC + INSTANT) ====================
 async function sendNext(chatId, sName) {
-  if (isDuplicate(`nextlock_${chatId}`)) {
+  if (isDuplicate('nextlock_' + chatId)) {
     await sendMessage(chatId, '⏳ Wait... already processing.', getMainButtons());
     return;
   }
@@ -1159,7 +1087,7 @@ async function sendNext(chatId, sName) {
   if (!staff) return;
   const ns = staff.name;
 
-  // ===== PRIORITY 1: Check active reminder (MongoDB) =====
+  // PRIORITY 1: Check active reminder
   const activeRem = await remindersCollection.findOne({ 
     staffName: ns, 
     activeLead: true,
@@ -1175,15 +1103,15 @@ async function sendNext(chatId, sName) {
       leadUsers.set(activeRem.regNo, chatId);
 
       const header = activeRem.fired 
-        ? `⏰ *REMINDER TIME!*\n\n` 
-        : `🔒 *BLOCKED — Pending Reminder*\n⏰ ${activeRem.reminderType}\n⏱️ Fire at: ${formatTime(activeRem.fireAt)}\n\n`;
+        ? '⏰ *REMINDER TIME!*\n\n' 
+        : '🔒 *BLOCKED — Pending Reminder*\n⏰ ' + activeRem.reminderType + '\n⏱️ Fire at: ' + formatTime(activeRem.fireAt) + '\n\n';
 
       await sendLead(chatId, header + getLeadMsg(rowData), getLeadButtons(activeRem.regNo, false));
       return;
     }
   }
 
-  // ===== PRIORITY 2: Check active assignment (MongoDB) =====
+  // PRIORITY 2: Check active assignment
   const activeAssign = await getActiveAssignment(chatId);
   if (activeAssign && activeAssign.status !== 'DONE') {
     const rowMap = await getRowMap();
@@ -1196,14 +1124,13 @@ async function sendNext(chatId, sName) {
     }
   }
 
-  // ===== PRIORITY 3: Get fresh lead (Atomic Lock) =====
+  // PRIORITY 3: Get fresh lead (Atomic Lock)
   const allData = await getSheetData();
   if (allData.length <= 1) {
     await sendMessage(chatId, '🎉 No leads available right now. 🏆', getMainButtons());
     return;
   }
 
-  // Get cooling locks from cache
   let locks = speedCache.getLocks();
   if (!locks) {
     locks = await tempLocksCollection.find({ expiresAt: { $gt: new Date() } }).toArray();
@@ -1211,7 +1138,6 @@ async function sendNext(chatId, sName) {
   }
   const coolingSet = new Set(locks.map(l => l.regNo));
 
-  // Get existing assignments
   const existingAssignments = await activeAssignmentsCollection.find({ status: { $ne: 'DONE' } }).toArray();
   const assignedSet = new Set(existingAssignments.map(a => a.regNo));
 
@@ -1247,14 +1173,12 @@ async function sendNext(chatId, sName) {
   for (const lead of pends) {
     const rn = safeStr(lead.data[CONFIG.LEAD_COLS.REG_NO]);
 
-    // ATOMIC LOCK ATTEMPT
     const locked = await atomicAssignLead(rn, ns, chatId);
     if (!locked) {
-      console.log(`⚠️ Lead ${rn} already assigned, trying next...`);
+      console.log('Lead ' + rn + ' already assigned, trying next...');
       continue;
     }
 
-    // INSTANT: Send message immediately
     userLeads.set(chatId, rn);
     leadUsers.set(rn, chatId);
 
@@ -1278,8 +1202,7 @@ async function sendNext(chatId, sName) {
     return;
   }
 
-  await sendMessage(chatId, '⏳ All leads just taken by others!
-Click ▶️ START LEAD again.', getMainButtons());
+  await sendMessage(chatId, '⏳ All leads just taken by others!\nClick ▶️ START LEAD again.', getMainButtons());
 }
 
 async function sendLead(chatId, text, buttons) {
@@ -1327,21 +1250,21 @@ async function sendReport(chatId, sName) {
 
   const mixCount = tRinging + tNotCon + tOutArea + tBusy;
 
-  const msg = `📊 *DAILY STATUS REPORT*\n👤 *Name:* ${sn}\n📅 *Date:* ${today}\n\n` +
-    `📞 *Total Call Count:* ${tCalls}\n` +
-    `💬 *Total WhatsApp Count:* ${tWhatsApp}\n` +
-    `✅ *Total Done Count:* ${totDone}\n` +
-    `📋 *Total Lead Count:* ${tLeads}\n` +
-    `⏭️ *Total Skip Count:* ${tSkips}\n` +
-    `🔄 *RINGING/NOT CON/OUT AREA/BUSY:* ${mixCount}\n` +
-    `📝 *Total Other Review Count:* ${tOther}\n` +
-    `⏰ *Total Reminder Set Count:* ${tReminders}\n` +
-    `🏆 *All Over Done Count:* ${totDone}\n\n` +
-    `📊 *Breakdown:*\n` +
-    `• RINGING: ${tRinging}\n` +
-    `• NOT CONNECTED: ${tNotCon}\n` +
-    `• OUT OF AREA: ${tOutArea}\n` +
-    `• BUSY: ${tBusy}`;
+  const msg = '📊 *DAILY STATUS REPORT*\n👤 *Name:* ' + sn + '\n📅 *Date:* ' + today + '\n\n' +
+    '📞 *Total Call Count:* ' + tCalls + '\n' +
+    '💬 *Total WhatsApp Count:* ' + tWhatsApp + '\n' +
+    '✅ *Total Done Count:* ' + totDone + '\n' +
+    '📋 *Total Lead Count:* ' + tLeads + '\n' +
+    '⏭️ *Total Skip Count:* ' + tSkips + '\n' +
+    '🔄 *RINGING/NOT CON/OUT AREA/BUSY:* ' + mixCount + '\n' +
+    '📝 *Total Other Review Count:* ' + tOther + '\n' +
+    '⏰ *Total Reminder Set Count:* ' + tReminders + '\n' +
+    '🏆 *All Over Done Count:* ' + totDone + '\n\n' +
+    '📊 *Breakdown:*\n' +
+    '• RINGING: ' + tRinging + '\n' +
+    '• NOT CONNECTED: ' + tNotCon + '\n' +
+    '• OUT OF AREA: ' + tOutArea + '\n' +
+    '• BUSY: ' + tBusy;
 
   await sendMessage(chatId, msg, getMainButtons());
 }
@@ -1352,7 +1275,7 @@ async function handleCallback(cq, chatId, userId) {
     const data = cq.data;
     const messageId = cq.message.message_id;
     const act = data.split('_')[0];
-    if (isDuplicate(`actlock_${chatId}_${act}`)) return;
+    if (isDuplicate('actlock_' + chatId + '_' + act)) return;
 
     let staff = speedCache.getStaffByChatId(chatId);
     if (!staff) {
@@ -1366,7 +1289,6 @@ async function handleCallback(cq, chatId, userId) {
     const sName = staff.name;
     const regNo = data.substring(data.indexOf('_') + 1);
 
-    // Get row data
     const rowMap = await getRowMap();
     const rowNum = rowMap[regNo];
     if (!rowNum) { await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons()); return; }
@@ -1374,7 +1296,6 @@ async function handleCallback(cq, chatId, userId) {
     const rowData = await getLeadRowData(rowNum);
     const lsn = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
 
-    // Verify ownership
     if (lsn && lsn.toUpperCase() !== sName.toUpperCase()) {
       await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.STAFF_NAME, value: sName }]);
     }
@@ -1384,13 +1305,11 @@ async function handleCallback(cq, chatId, userId) {
 
     switch (act) {
       case 'CALL': {
-        // INSTANT
         let c = parseInt(rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || 0) + 1;
         let mDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
         if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.substring(2);
-        await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n📱 +91${mDig}\n🔄 Count: ${c}\n\n👆 Tap number to dial`, getMainButtons());
+        await sendMessage(chatId, '📞 *Tap to Call*\n\n👤 ' + safeStr(rowData[CONFIG.LEAD_COLS.NAME]) + '\n📱 +91' + mDig + '\n🔄 Count: ' + c + '\n\n👆 Tap number to dial', getMainButtons());
 
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.COUNT_DIALER, value: c }]);
@@ -1401,17 +1320,15 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'WHATSAPP': {
-        // INSTANT
         let wDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
         if (wDig.startsWith('91') && wDig.length > 10) wDig = wDig.substring(2);
         const wName = safeStr(rowData[CONFIG.LEAD_COLS.NAME]);
         const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
         const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
-        const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
+        const wMsg = '🚗 Hello ' + wName + '!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *' + wReg + '* ka insurance *' + wDs + '* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye';
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
-        await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        await sendMessage(chatId, '📱 *WhatsApp Ready*\n\n👤 ' + wName + '\n📱 +' + wDig + '\n🚗 ' + wReg + '\n\n👇 Tap button:', { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
 
-        // BACKGROUND
         setImmediate(async () => {
           try { await incrementStat(sName, 'whatsapp'); } catch (e) {}
         });
@@ -1419,20 +1336,13 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'REVIEW':
-        // INSTANT
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
-
-📝 *Select Review:*', getReviewButtons(regNo));
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n📝 *Select Review:*', getReviewButtons(regNo));
         break;
 
       case 'RINGING': {
-        // INSTANT
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
+        await sendMessage(chatId, '✅ RINGING\n🔒 ' + sName + '\n⏱️ 2 HOURS to DONE!', getMainButtons());
 
-⚠️ RINGING', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
-
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await setCooling(regNo, 2);
@@ -1454,13 +1364,9 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'NOTCONN': {
-        // INSTANT
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
+        await sendMessage(chatId, '✅ NOT CONNECTED\n🔒 ' + sName + '\n⏱️ 2 HOURS to DONE!', getMainButtons());
 
-⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
-
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await setCooling(regNo, 2);
@@ -1482,13 +1388,9 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'OUTAREA': {
-        // INSTANT
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
+        await sendMessage(chatId, '✅ OUT OF AREA\n🔒 ' + sName + '\n⏱️ 2 HOURS to DONE!', getMainButtons());
 
-⚠️ OUT OF AREA', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
-
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await setCooling(regNo, 2);
@@ -1510,13 +1412,9 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'BUSY': {
-        // INSTANT
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
+        await sendMessage(chatId, '✅ BUSY\n🔒 ' + sName + '\n⏱️ 2 HOURS to DONE!', getMainButtons());
 
-⚠️ BUSY', getLeadButtons(regNo, false));
-        await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
-
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await setCooling(regNo, 2);
@@ -1538,36 +1436,23 @@ async function handleCallback(cq, chatId, userId) {
       }
 
       case 'OTHER': {
-        // INSTANT
         await updateAssignmentStatus(regNo, 'REVIEWING', null);
         pendingReviews.set(chatId, { regNo, messageId });
         userLeads.set(chatId, regNo); 
         leadUsers.set(regNo, chatId);
 
-        await editMessage(chatId, messageId, getLeadMsg(rowData) + '
-
-✏️ *Type review & send*
-
-💡 Examples:
-• 1 ghante baad call kro
-• kal call kro
-• 28 ko call kro
-• sunday ko call kro
-• call disconnect', null);
-        await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n✏️ *Type review & send*\n\n💡 Examples:\n• 1 ghante baad call kro\n• kal call kro\n• 28 ko call kro\n• sunday ko call kro\n• call disconnect', null);
+        await sendMessage(chatId, '✏️ Type review & send\n🔐 PERMANENT LOCK: ' + sName + '\n/cancel to cancel', null, true);
         break;
       }
 
       case 'DONE': {
-        // FIX: Fetch fresh row data to avoid stale data from async background updates
-        const freshRowData = await getLeadRowData(rowNum);
-        const rv = safeStr(freshRowData[CONFIG.LEAD_COLS.REVIEW]);
+        const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
         if (!rv) { 
           await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', getMainButtons()); 
           return; 
         }
 
-        // Check if active reminder exists
         const activeRem = await remindersCollection.findOne({ 
           regNo, 
           staffName: sName, 
@@ -1575,12 +1460,9 @@ async function handleCallback(cq, chatId, userId) {
         });
 
         if (activeRem && activeRem.fired) {
-          // Reminder time came, staff clicked DONE → COMPLETE
-          // INSTANT
-          await sendMessage(chatId, `✅ Reminder completed!\n🔓 Unblocked.\n\nClick ▶️ START LEAD for new lead.`, getMainButtons());
+          await sendMessage(chatId, '✅ Reminder completed!\n🔓 Unblocked.\n\nClick ▶️ START LEAD for new lead.', getMainButtons());
           await deleteMessage(chatId, messageId);
 
-          // BACKGROUND
           setImmediate(async () => {
             try {
               await remindersCollection.updateOne(
@@ -1611,12 +1493,9 @@ async function handleCallback(cq, chatId, userId) {
         const rvUpper = rv.toUpperCase();
 
         if (tempReviews.includes(rvUpper)) {
-          // Temp review
-          // INSTANT
-          await sendMessage(chatId, `✅ ${rvUpper} done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD`, getMainButtons());
+          await sendMessage(chatId, '✅ ' + rvUpper + ' done!\n🔄 Lead reset.\n⏱️ 2 HOURS cooling period.\n\nClick ▶️ START LEAD', getMainButtons());
           await deleteMessage(chatId, messageId);
 
-          // BACKGROUND
           setImmediate(async () => {
             try {
               await clearAssignment(regNo);
@@ -1641,16 +1520,12 @@ async function handleCallback(cq, chatId, userId) {
           return;
         }
 
-        // OTHER review done
-        // INSTANT
         await sendMessage(chatId, '✅ Done!\nClick ▶️ START LEAD for next.', getMainButtons());
 
-        // BACKGROUND
         setImmediate(async () => {
           try {
             await clearAssignment(regNo);
 
-            // Check if there's a reminder to mark complete
             const rem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });
             if (rem) {
               await remindersCollection.updateOne(
@@ -1676,14 +1551,63 @@ async function handleCallback(cq, chatId, userId) {
         leadUsers.delete(regNo);
 
         const updatedRow = await getLeadRowData(rowNum);
-        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${currentTime}`, null);\n        break;\n      }\n\n      case 'SKIP': {\n        // Check if active reminder exists\n        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });\n        if (activeRem) {\n          await sendMessage(chatId,`❌ SKIP blocked! Active reminder pending.
-⏰ ${activeRem.reminderType}
+        await editMessage(chatId, messageId, getLeadMsg(updatedRow) + '\n\n✅ COMPLETED by ' + sName + ' at ' + currentTime, null);
+        break;
+      }
 
-Complete the reminder first.`, getMainButtons());\n          return;\n        }\n\n        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);\n        if (cr) {\n          await sendMessage(chatId,`❌ SKIP blocked! Review done: ${cr}
-Click DONE.`, getMainButtons()); \n          return;\n        }\n\n        // INSTANT\n        await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());\n\n        // BACKGROUND\n        setImmediate(async () => {\n          try {\n            await clearAssignment(regNo);\n            await clearCooling(regNo);\n\n            await updateLeadCells(rowNum, [\n              { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },\n              { col: CONFIG.LEAD_COLS.STATUS, value: '' },\n              { col: CONFIG.LEAD_COLS.REVIEW, value: '' },\n              { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },\n              { col: CONFIG.LEAD_COLS.DATE, value: '' },\n              { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }\n            ]);\n            await incrementStat(sName, 'skips');\n          } catch (e) { console.error('SKIP background error:', e.message); }\n        });\n\n        pendingReviews.delete(chatId);\n        userLeads.delete(chatId);\n        leadUsers.delete(regNo);\n        break;\n      }\n    }\n  } catch (err) {\n    console.error('handleCallback ERROR:', err);\n    await sendMessage(chatId, '⚠️ Button error: ' + err.message, getMainButtons());\n  }\n}\n\n// ==================== IS ROW EXPIRED (MONGODB BASED) ====================\nasync function isRowExpired(rowNum, regNo) {\n  const lock = await tempLocksCollection.findOne({ regNo });\n  if (!lock) return false;\n\n  const now = new Date();\n  if (lock.expiresAt < now) {\n    console.log(`⏱️ Cooling expired for ${regNo}, clearing row ${rowNum}`);
-    // Clear assignment
+      case 'SKIP': {
+        const activeRem = await remindersCollection.findOne({ regNo, staffName: sName, activeLead: true });
+        if (activeRem) {
+          await sendMessage(chatId, '❌ SKIP blocked! Active reminder pending.\n⏰ ' + activeRem.reminderType + '\n\nComplete the reminder first.', getMainButtons());
+          return;
+        }
+
+        const cr = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+        if (cr) { 
+          await sendMessage(chatId, '❌ SKIP blocked! Review done: ' + cr + '\nClick DONE.', getMainButtons()); 
+          return; 
+        }
+
+        await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());
+
+        setImmediate(async () => {
+          try {
+            await clearAssignment(regNo);
+            await clearCooling(regNo);
+
+            await updateLeadCells(rowNum, [
+              { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+              { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+              { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+              { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
+              { col: CONFIG.LEAD_COLS.DATE, value: '' },
+              { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
+            ]);
+            await incrementStat(sName, 'skips');
+          } catch (e) { console.error('SKIP background error:', e.message); }
+        });
+
+        pendingReviews.delete(chatId); 
+        userLeads.delete(chatId); 
+        leadUsers.delete(regNo);
+        break;
+      }
+    }
+  } catch (err) {
+    console.error('handleCallback ERROR:', err);
+    await sendMessage(chatId, '⚠️ Button error: ' + err.message, getMainButtons());
+  }
+}
+
+// ==================== IS ROW EXPIRED (MONGODB BASED) ====================
+async function isRowExpired(rowNum, regNo) {
+  const lock = await tempLocksCollection.findOne({ regNo });
+  if (!lock) return false;
+
+  const now = new Date();
+  if (lock.expiresAt < now) {
+    console.log('Cooling expired for ' + regNo + ', clearing row ' + rowNum);
     await clearAssignment(regNo);
-    // Clear row in sheet (background)
     setImmediate(async () => {
       try {
         await updateLeadCells(rowNum, [
@@ -1713,7 +1637,6 @@ async function checkReminders() {
 
   for (const rem of due) {
     try {
-      // Mark as fired BUT keep activeLead: true (block until DONE)
       await remindersCollection.updateOne(
         { _id: rem._id },
         { $set: { fired: true } }
@@ -1721,12 +1644,11 @@ async function checkReminders() {
 
       const mob = safeStr(rem.customerMobile).replace(/\D/g, '');
       const cleanMob = mob.startsWith('91') && mob.length > 10 ? mob.substring(2) : mob;
-      const msg = `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
+      const msg = '⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ' + rem.customerName + '\n📱 *Mobile:* +' + cleanMob + '\n🚗 *Reg No:* ' + rem.regNo + '\n📝 *Note:* ' + rem.reviewText + '\n⏱️ *Type:* ' + rem.reminderType + '\n\n👉 *Call back now!*';
 
       const rowMap = await getRowMap();
       const rowNum = rowMap[rem.regNo];
 
-      // Set as active lead for the staff
       userLeads.set(rem.chatId, rem.regNo);
       leadUsers.set(rem.regNo, rem.chatId);
 
@@ -1734,25 +1656,20 @@ async function checkReminders() {
         const rowData = await getLeadRowData(rowNum);
 
         if (safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE') {
-          // Lead pehle se DONE tha, phir bhi reminder complete karna hai
-          await sendMessage(rem.chatId, msg + '
-
-⚠️ This lead was marked DONE earlier. Complete the reminder now.', getMainButtons());
-          await sendLead(rem.chatId, `⏰ *REMINDER TIME!*\n\n` + getLeadMsg(rowData), getLeadButtons(rem.regNo, false));
+          await sendMessage(rem.chatId, msg + '\n\n⚠️ This lead was marked DONE earlier. Complete the reminder now.', getMainButtons());
+          await sendLead(rem.chatId, '⏰ *REMINDER TIME!*\n\n' + getLeadMsg(rowData), getLeadButtons(rem.regNo, false));
           continue;
         }
 
         const currentDate = formatDate();
         const currentTime = formatTime();
 
-        // Update assignment
         await activeAssignmentsCollection.updateOne(
           { regNo: rem.regNo },
           { $set: { status: 'SENT', updatedAt: new Date() } },
           { upsert: true }
         );
 
-        // Background sheet update
         setImmediate(async () => {
           try {
             await updateLeadCells(rowNum, [
@@ -1764,9 +1681,7 @@ async function checkReminders() {
           } catch (e) {}
         });
 
-        await sendLead(rem.chatId, msg + '
-
-' + getLeadMsg(rowData), getLeadButtons(rem.regNo, true));
+        await sendLead(rem.chatId, msg + '\n\n' + getLeadMsg(rowData), getLeadButtons(rem.regNo, true));
       } else {
         await sendMessage(rem.chatId, msg, getMainButtons());
       }
@@ -1782,7 +1697,6 @@ async function checkExpiredLocks() {
     const rowMap = await getRowMap();
     const rowNum = rowMap[lock.regNo];
     if (rowNum) {
-      // Background clear
       setImmediate(async () => {
         try {
           await updateLeadCells(rowNum, [
@@ -1798,7 +1712,6 @@ async function checkExpiredLocks() {
     }
     await tempLocksCollection.deleteOne({ _id: lock._id });
 
-    // Clear assignment if exists
     await clearAssignment(lock.regNo);
 
     const uc = leadUsers.get(lock.regNo);
@@ -1824,14 +1737,13 @@ async function updateBotResponseLive() {
       const timerStr = formatDuration(remaining);
       const expiryTime = formatTime(lock.expiresAt);
 
-      // Get assignment to know review type
       const assign = await activeAssignmentsCollection.findOne({ regNo: lock.regNo });
       const reviewType = assign?.review || 'Active';
 
-      const botMsg = `⏱️ ${reviewType} | ${timerStr} left | Resets @ ${expiryTime}`;
+      const botMsg = '⏱️ ' + reviewType + ' | ' + timerStr + ' left | Resets @ ' + expiryTime;
 
       updates.push({
-        range: `${CONFIG.LEADS_SHEET_NAME}!N${rowNum}`,
+        range: CONFIG.LEADS_SHEET_NAME + '!N' + rowNum,
         values: [[botMsg]]
       });
     }
@@ -1860,8 +1772,8 @@ async function setWebhook() {
   const url = process.env.WEBHOOK_URL;
   if (!url) { console.log('WEBHOOK_URL not set'); return; }
   try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TOKEN}/setWebhook`, { url });
-    console.log('✅ Webhook set:', url);
+    await axios.post('https://api.telegram.org/bot' + CONFIG.TOKEN + '/setWebhook', { url });
+    console.log('Webhook set:', url);
   } catch (e) {
     console.error('Webhook error:', e.response?.data || e.message);
   }
@@ -1870,7 +1782,6 @@ async function setWebhook() {
 async function start() {
   await connectMongo();
 
-  // Rebuild memory state from MongoDB on startup
   const activeAssigns = await activeAssignmentsCollection.find({ status: { $ne: 'DONE' } }).toArray();
   for (const a of activeAssigns) {
     if (a.chatId && a.regNo) {
@@ -1878,19 +1789,18 @@ async function start() {
       leadUsers.set(a.regNo, a.chatId);
     }
   }
-  console.log(`✅ Rebuilt ${activeAssigns.length} active assignments from MongoDB`);
+  console.log('Rebuilt ' + activeAssigns.length + ' active assignments from MongoDB');
 
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, async () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log('Server running on port ' + PORT);
     await setWebhook();
   });
 
-  // Intervals
   setInterval(() => checkReminders().catch(console.error), 60000);
   setInterval(() => syncStaffFromSheet().catch(console.error), 120000);
   setInterval(() => updateBotResponseLive().catch(console.error), 30000);
-  setInterval(() => processSheetBatch().catch(console.error), 5000); // NEW: Background sheet sync
+  setInterval(() => processSheetBatch().catch(console.error), 5000);
 }
 
 start().catch(console.error);
