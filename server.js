@@ -589,8 +589,10 @@ async function processSheetBatch() {
     const pending = await pendingSheetUpdatesCollection.find({ retryCount: { $lt: 3 } }).limit(50).toArray();
     if (pending.length === 0) return;
 
+    const rowMap = await getRowMap();
+
     const data = pending.map(p => ({
-      range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + p.updates.col)}${p.rowNum || (await getRowMap())[p.regNo]}`,
+      range: `${CONFIG.LEADS_SHEET_NAME}!${String.fromCharCode(65 + p.updates.col)}${p.updates.rowNum || rowMap[p.regNo]}`,
       values: [[p.updates.value]]
     }));
 
