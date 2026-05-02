@@ -27,7 +27,9 @@ async function setup() {
       'tempLocks',
       'staff_stats',
       'activeAssignments',
-      'pendingSheetUpdates'
+      'pendingSheetUpdates',
+      'lead_audit',      // ✅ NEW - Audit trail
+      'lead_rotations'   // ✅ NEW - Staff rotation tracking
     ];
 
     for (const collName of collections) {
@@ -67,7 +69,7 @@ async function setup() {
     await db.collection('staff_stats').createIndex({ staffName: 1, date: 1 }, { unique: true });
     console.log('✅ staff_stats.staffName_date index');
 
-    // activeAssignments indexes (NEW - CRITICAL)
+    // activeAssignments indexes
     await db.collection('activeAssignments').createIndex({ regNo: 1 }, { unique: true });
     console.log('✅ activeAssignments.regNo UNIQUE index');
     await db.collection('activeAssignments').createIndex({ chatId: 1 });
@@ -77,11 +79,23 @@ async function setup() {
     await db.collection('activeAssignments').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
     console.log('✅ activeAssignments.expiresAt TTL index (4 hours)');
 
-    // pendingSheetUpdates indexes (NEW)
+    // pendingSheetUpdates indexes
     await db.collection('pendingSheetUpdates').createIndex({ createdAt: 1 });
     console.log('✅ pendingSheetUpdates.createdAt index');
     await db.collection('pendingSheetUpdates').createIndex({ regNo: 1 });
     console.log('✅ pendingSheetUpdates.regNo index');
+
+    // ✅ lead_audit indexes (NEW)
+    await db.collection('lead_audit').createIndex({ regNo: 1, timestamp: -1 });
+    console.log('✅ lead_audit.regNo_timestamp index');
+    await db.collection('lead_audit').createIndex({ staffName: 1, timestamp: -1 });
+    console.log('✅ lead_audit.staffName_timestamp index');
+
+    // ✅ lead_rotations indexes (NEW)
+    await db.collection('lead_rotations').createIndex({ regNo: 1, prevStaff: 1 });
+    console.log('✅ lead_rotations.regNo_prevStaff index');
+    await db.collection('lead_rotations').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+    console.log('✅ lead_rotations.expiresAt TTL index (24 hours)');
 
     console.log('\n🎉 MongoDB setup complete!');
     console.log('\n📋 Collections created:');
@@ -89,8 +103,10 @@ async function setup() {
     console.log('  2. reminders - Callback reminders');
     console.log('  3. tempLocks - 2Hr cooling locks');
     console.log('  4. staff_stats - Daily statistics');
-    console.log('  5. activeAssignments - Lead assignments (NEW)');
-    console.log('  6. pendingSheetUpdates - Background sheet sync queue (NEW)');
+    console.log('  5. activeAssignments - Lead assignments');
+    console.log('  6. pendingSheetUpdates - Background sheet sync queue');
+    console.log('  7. lead_audit - Full audit trail (NEW)');
+    console.log('  8. lead_rotations - Staff rotation tracking (NEW)');
 
   } catch (err) {
     console.error('❌ Setup error:', err.message);
