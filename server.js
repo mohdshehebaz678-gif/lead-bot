@@ -65,7 +65,7 @@ const speedCache = {
 
 // ==================== MONGODB ====================
 const mongoUri = process.env.MONGODB_URI;
-let db, staffsCollection, remindersCollection, tempLocksCollection, statsCollection;
+let db, staffsCollection, remindersCollection, tempLocksCollection, statsCollection, auditCollection, leadRotationsCollection;
 
 async function connectMongo() {
   const client = new MongoClient(mongoUri, { 
@@ -78,14 +78,30 @@ async function connectMongo() {
   remindersCollection = db.collection('reminders');
   tempLocksCollection = db.collection('tempLocks');
   statsCollection = db.collection('staff_stats');
+  auditCollection = db.collection('lead_audit');
+  leadRotationsCollection = db.collection('lead_rotations');
 
   await remindersCollection.createIndex({ fireAt: 1 }).catch(() => {});
   await tempLocksCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
   await staffsCollection.createIndex({ userName: 1 }).catch(() => {});
   await staffsCollection.createIndex({ chatId: 1 }).catch(() => {});
   await statsCollection.createIndex({ staffName: 1, date: 1 }).catch(() => {});
+  await auditCollection.createIndex({ regNo: 1, timestamp: -1 }).catch(() => {});
+  await auditCollection.createIndex({ staffName: 1, timestamp: -1 }).catch(() => {});
+  await leadRotationsCollection.createIndex({ regNo: 1, prevStaff: 1 }).catch(() => {});
+  await leadRotationsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
+  
   console.log('✅ MongoDB connected');
   await syncStaffFromSheet();
+}
+
+// ==================== AUDIT TRAIL (FIRE & FORGET) ====================
+function logAudit(data) {
+  if (!auditCollection) return;
+  auditCollection.insertOne({
+    ...data,
+    timestamp: new Date()
+  }).catch(() => {});
 }
 
 // ==================== STATS ====================
@@ -375,7 +391,6 @@ async function updateLeadCells(rowNum, updates) {
 // ==================== DAILING COUNT COPY ====================
 async function copyToDailingCount(rowData) {
   try {
-    // Get current data from DAILING COUNT to find next empty row
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: CONFIG.SHEET_ID,
       range: `${CONFIG.DAILING_COUNT_SHEET}!A:A`
@@ -383,7 +398,6 @@ async function copyToDailingCount(rowData) {
     const rows = res.data.values || [];
     const nextRow = rows.length + 1;
 
-    // Prepare row data (A to N from Sheet1 + COPIED_AT in O)
     const copyData = [
       rowData[CONFIG.LEAD_COLS.NAME] || '',
       rowData[CONFIG.LEAD_COLS.MOBILE] || '',
@@ -399,7 +413,7 @@ async function copyToDailingCount(rowData) {
       rowData[CONFIG.LEAD_COLS.DONE_TIME] || '',
       rowData[CONFIG.LEAD_COLS.COUNT_DIALER] || '',
       rowData[CONFIG.LEAD_COLS.BOT_RESPONSE] || '',
-      formatDateTime() // COPIED_AT in column O
+      formatDateTime()
     ];
 
     await sheets.spreadsheets.values.update({
@@ -598,9 +612,40 @@ async function clearCooling(regNo) {
   await tempLocksCollection.deleteOne({ regNo });
 }
 
+// ==================== EXPIRE LEAD (SHARED) ====================
+async function expireLead(regNo, rowNum, rowData) {
+  const staffName = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
+  const review = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+
+  logAudit({ regNo, staffName, action: 'COOLING_EXPIRED', reviewType: review });
+
+  if (staffName) {
+    await leadRotationsCollection.updateOne(
+      { regNo },
+      { $set: { regNo, prevStaff: staffName, expiredAt: new Date(), expiresAt: new Date(Date.now() + 24 * 3600000) } },
+      { upsert: true }
+    );
+  }
+
+  await updateLeadCells(rowNum, [
+    { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
+    { col: CONFIG.LEAD_COLS.STATUS, value: '' },
+    { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+    { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
+    { col: CONFIG.LEAD_COLS.DATE, value: '' },
+    { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
+  ]);
+
+  await tempLocksCollection.deleteOne({ regNo });
+  const uc = leadUsers.get(regNo);
+  if (uc) { userLeads.delete(uc); leadUsers.delete(regNo); }
+}
+
 // ==================== BOT RESPONSE UPDATER (LIVE COOLING) ====================
 async function updateBotResponseLive() {
   try {
+    speedCache.invalidateLeads();
+    
     const now = new Date();
     const locks = await tempLocksCollection.find({ expiresAt: { $gt: now } }).toArray();
     if (locks.length === 0) return;
@@ -612,11 +657,20 @@ async function updateBotResponseLive() {
       const rowNum = rowMap[lock.regNo];
       if (!rowNum) continue;
 
+      const rowData = await getLeadRowData(rowNum);
+      const actualRegNo = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
+      if (actualRegNo !== lock.regNo) {
+        console.log(`⚠️ Row cache mismatch: expected ${lock.regNo}, got ${actualRegNo}`);
+        continue;
+      }
+
       const remaining = lock.expiresAt - now;
       const timerStr = formatDuration(remaining);
       const expiryTime = formatTime(lock.expiresAt);
+      const staffName = safeStr(rowData[CONFIG.LEAD_COLS.STAFF_NAME]);
+      const review = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
 
-      const botMsg = `⏱️ COOLING: ${timerStr} left | Resets @ ${expiryTime}`;
+      const botMsg = `🔒 ${review || 'COOLING'} | By: ${staffName || 'STAFF'} | ⏱️ ${timerStr} left | Exp: ${expiryTime}`;
 
       updates.push({
         range: `${CONFIG.LEADS_SHEET_NAME}!N${rowNum}`,
@@ -695,6 +749,8 @@ async function handleText(text, chatId, userId) {
         { col: CONFIG.LEAD_COLS.STAFF_NAME, value: sn }
       ]);
 
+      logAudit({ regNo, staffName: sn, action: 'OTHER_REVIEW', reviewText: text });
+
       const freshRow = await getLeadRowData(rowNum);
       const reminder = detectReminder(text, chatId, sn, regNo, freshRow);
 
@@ -704,11 +760,13 @@ async function handleText(text, chatId, userId) {
 
       if (reminder && reminder.isFinal) {
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
+        logAudit({ regNo, staffName: sn, action: 'FINAL_RESPONSE', reviewText: text });
         await incrementStat(sn, 'otherReview');
       } else if (reminder) {
         const tStr = formatTime(reminder.time);
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
         await remindersCollection.insertOne(reminder.data);
+        logAudit({ regNo, staffName: sn, action: 'REMINDER_SET', reviewText: text, reminderType: reminder.type, fireAt: reminder.time });
         await incrementStat(sn, 'reminders');
         await incrementStat(sn, 'otherReview');
       } else {
@@ -735,6 +793,17 @@ async function handleText(text, chatId, userId) {
   if (text === '/refresh') {
     await syncStaffFromSheet();
     await sendMessage(chatId, '🔄 Staff data refreshed!', getMainButtons());
+    return;
+  }
+
+  if (text.startsWith('/audit')) {
+    const parts = text.split(' ');
+    if (parts.length < 2) {
+      await sendMessage(chatId, 'Usage: /audit <REG_NO>\nExample: /audit MH12AB1234', getMainButtons());
+      return;
+    }
+    const auditRegNo = safeStr(parts[1]).toUpperCase();
+    await sendAuditReport(chatId, auditRegNo);
     return;
   }
 
@@ -783,6 +852,47 @@ async function sendWelcome(chatId, staff) {
   await sendMessage(chatId, msg, getMainButtons());
 }
 
+async function sendAuditReport(chatId, regNo) {
+  try {
+    const audits = await auditCollection.find({ regNo: regNo.toUpperCase() })
+      .sort({ timestamp: 1 })
+      .limit(50)
+      .toArray();
+    
+    if (audits.length === 0) {
+      await sendMessage(chatId, `📋 No audit trail found for *${regNo}*`, getMainButtons());
+      return;
+    }
+    
+    let msg = `📋 *AUDIT TRAIL: ${regNo}*\n\n`;
+    audits.forEach((a, i) => {
+      const dt = formatDateTime(a.timestamp);
+      let icon = '📝';
+      if (a.action === 'LEAD_SENT') icon = '📤';
+      if (a.action === 'CALL_CLICKED') icon = '📞';
+      if (a.action === 'WHATSAPP_CLICKED') icon = '💬';
+      if (a.action === 'COOLING_START') icon = '🔒';
+      if (a.action === 'COOLING_EXPIRED') icon = '⏱️';
+      if (a.action === 'DONE') icon = '✅';
+      if (a.action === 'REMINDER_SET') icon = '⏰';
+      if (a.action === 'REMINDER_FIRED') icon = '🔔';
+      if (a.action === 'SKIP') icon = '⏭️';
+      if (a.action === 'FINAL_RESPONSE') icon = '🏁';
+      
+      msg += `${i+1}. ${icon} *${a.action}* — ${a.staffName || 'N/A'}\n   _${dt}_\n`;
+      if (a.reviewType) msg += `   Review: ${a.reviewType}\n`;
+      if (a.reviewText && a.reviewText !== a.reviewType) msg += `   Note: ${a.reviewText}\n`;
+      msg += '\n';
+    });
+    
+    msg += `*Total: ${audits.length} interactions*`;
+    await sendMessage(chatId, msg, getMainButtons());
+  } catch (e) {
+    console.error('Audit report error:', e);
+    await sendMessage(chatId, '⚠️ Error fetching audit trail.', getMainButtons());
+  }
+}
+
 async function handleCallback(cq, chatId, userId) {
   try {
     const data = cq.data;
@@ -826,6 +936,7 @@ async function handleCallback(cq, chatId, userId) {
         let mDig = safeStr(rowData[CONFIG.LEAD_COLS.MOBILE]).replace(/\D/g, '');
         if (mDig.startsWith('91') && mDig.length > 10) mDig = mDig.substring(2);
         await sendMessage(chatId, `📞 *Tap to Call*\n\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n📱 +91${mDig}\n🔄 Count: ${c}\n\n👆 Tap number to dial`, getMainButtons());
+        logAudit({ regNo, staffName: sName, action: 'CALL_CLICKED' });
         await incrementStat(sName, 'calls');
         break;
       }
@@ -838,6 +949,7 @@ async function handleCallback(cq, chatId, userId) {
         const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
         await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        logAudit({ regNo, staffName: sName, action: 'WHATSAPP_CLICKED' });
         await incrementStat(sName, 'whatsapp');
         break;
       }
@@ -852,8 +964,9 @@ async function handleCallback(cq, chatId, userId) {
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         const expiry = new Date(Date.now() + 2 * 3600000);
-        const botResp = `⏱️ RINGING | 2Hr cooling till ${formatTime(expiry)}`;
+        const botResp = `🔒 RINGING | By: ${sName} | ⏱️ 2Hr cooling till ${formatTime(expiry)}`;
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
+        logAudit({ regNo, staffName: sName, action: 'COOLING_START', reviewType: 'RINGING', expiryTime: expiry });
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ RINGING', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ RINGING\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'ringing');
@@ -867,8 +980,9 @@ async function handleCallback(cq, chatId, userId) {
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         const expiry = new Date(Date.now() + 2 * 3600000);
-        const botResp = `⏱️ NOT CONNECTED | 2Hr cooling till ${formatTime(expiry)}`;
+        const botResp = `🔒 NOT CONNECTED | By: ${sName} | ⏱️ 2Hr cooling till ${formatTime(expiry)}`;
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
+        logAudit({ regNo, staffName: sName, action: 'COOLING_START', reviewType: 'NOT CONNECTED', expiryTime: expiry });
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ NOT CONNECTED', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ NOT CONNECTED\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'notConnected');
@@ -882,8 +996,9 @@ async function handleCallback(cq, chatId, userId) {
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         const expiry = new Date(Date.now() + 2 * 3600000);
-        const botResp = `⏱️ OUT OF AREA | 2Hr cooling till ${formatTime(expiry)}`;
+        const botResp = `🔒 OUT OF AREA | By: ${sName} | ⏱️ 2Hr cooling till ${formatTime(expiry)}`;
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
+        logAudit({ regNo, staffName: sName, action: 'COOLING_START', reviewType: 'OUT OF AREA', expiryTime: expiry });
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ OUT OF AREA', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ OUT OF AREA\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'outOfArea');
@@ -897,8 +1012,9 @@ async function handleCallback(cq, chatId, userId) {
         await setCooling(regNo, 2);
         pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         const expiry = new Date(Date.now() + 2 * 3600000);
-        const botResp = `⏱️ BUSY | 2Hr cooling till ${formatTime(expiry)}`;
+        const botResp = `🔒 BUSY | By: ${sName} | ⏱️ 2Hr cooling till ${formatTime(expiry)}`;
         await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
+        logAudit({ regNo, staffName: sName, action: 'COOLING_START', reviewType: 'BUSY', expiryTime: expiry });
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n⚠️ BUSY', getLeadButtons(regNo, false));
         await sendMessage(chatId, `✅ BUSY\n🔒 ${sName}\n⏱️ 2 HOURS to DONE!`, getMainButtons());
         await incrementStat(sName, 'busy');
@@ -923,7 +1039,6 @@ async function handleCallback(cq, chatId, userId) {
         const rvUpper = rv.toUpperCase();
 
         if (tempReviews.includes(rvUpper)) {
-          // Temp review: Sheet me DONE fill karo + BOT RESPONSE update + COPY to DAILING COUNT
           const doneMsg = `✅ ${rvUpper} DONE by ${sName} @ ${currentTime} | Cooling: 2Hr`;
           await updateLeadCells(rowNum, [
             { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
@@ -931,9 +1046,14 @@ async function handleCallback(cq, chatId, userId) {
             { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
           ]);
 
-          // COPY TO DAILING COUNT before clearing
           const finalRowData = await getLeadRowData(rowNum);
           await copyToDailingCount(finalRowData);
+
+          // BUG FIX: Clear cooling lock & rotation
+          await clearCooling(regNo);
+          await leadRotationsCollection.deleteOne({ regNo });
+
+          logAudit({ regNo, staffName: sName, action: 'DONE', reviewType: rvUpper });
 
           pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
           await deleteMessage(chatId, messageId);
@@ -942,7 +1062,7 @@ async function handleCallback(cq, chatId, userId) {
           return;
         }
 
-        // OTHER review: Sheet me DONE fill karo + COPY to DAILING COUNT
+        // OTHER review done
         const doneMsg = `✅ OTHER DONE by ${sName} @ ${currentTime}`;
         pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
         await updateLeadCells(rowNum, [
@@ -951,9 +1071,14 @@ async function handleCallback(cq, chatId, userId) {
           { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: doneMsg }
         ]);
 
-        // COPY TO DAILING COUNT before clearing
         const finalRowData = await getLeadRowData(rowNum);
         await copyToDailingCount(finalRowData);
+
+        // BUG FIX: Clear cooling lock & rotation
+        await clearCooling(regNo);
+        await leadRotationsCollection.deleteOne({ regNo });
+
+        logAudit({ regNo, staffName: sName, action: 'DONE', reviewType: 'OTHER', reviewText: rv });
 
         const updatedRow = await getLeadRowData(rowNum);
         await editMessage(chatId, messageId, getLeadMsg(updatedRow) + `\n\n✅ COMPLETED by ${sName} at ${currentTime}`, null);
@@ -972,6 +1097,7 @@ async function handleCallback(cq, chatId, userId) {
           { col: CONFIG.LEAD_COLS.DATE, value: '' },
           { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
         ]);
+        logAudit({ regNo, staffName: sName, action: 'SKIP' });
         pendingReviews.delete(chatId); await clearCooling(regNo); userLeads.delete(chatId); leadUsers.delete(regNo);
         await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());
         break;
@@ -986,22 +1112,10 @@ async function handleCallback(cq, chatId, userId) {
 async function isRowExpired(rowNum, regNo) {
   const lock = await tempLocksCollection.findOne({ regNo });
   if (!lock) return false;
-
-  const now = new Date();
-  if (lock.expiresAt < now) {
+  if (lock.expiresAt < new Date()) {
     console.log(`⏱️ Cooling expired for ${regNo}, clearing row ${rowNum}`);
-    // 2 hours complete: Sheet CLEAR karo, fresh lead banao
-    await updateLeadCells(rowNum, [
-      { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-      { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-      { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-      { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
-      { col: CONFIG.LEAD_COLS.DATE, value: '' },
-      { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
-    ]);
-    await tempLocksCollection.deleteOne({ regNo });
-    const uc = leadUsers.get(regNo);
-    if (uc) { userLeads.delete(uc); leadUsers.delete(regNo); }
+    const rowData = await getLeadRowData(rowNum);
+    await expireLead(regNo, rowNum, rowData);
     return true;
   }
   return false;
@@ -1085,6 +1199,17 @@ async function sendNext(chatId, sName) {
     const rn = safeStr(lead.data[CONFIG.LEAD_COLS.REG_NO]);
     if (coolingSet.has(rn)) continue;
 
+    // ROTATION CHECK: Same staff ko 24hr tak nahi milega
+    const rotation = await leadRotationsCollection.findOne({
+      regNo: rn,
+      prevStaff: { $regex: `^${ns}$`, $options: 'i' },
+      expiresAt: { $gt: new Date() }
+    });
+    if (rotation) {
+      console.log(`🔄 Rotation skip: ${rn} for ${ns}`);
+      continue;
+    }
+
     const fresh = await getLeadRowData(lead.row);
     const freshStatus = safeStr(fresh[CONFIG.LEAD_COLS.STATUS]).toUpperCase();
     const freshStaff = safeStr(fresh[CONFIG.LEAD_COLS.STAFF_NAME]);
@@ -1107,6 +1232,7 @@ async function sendNext(chatId, sName) {
       userLeads.set(chatId, rn);
       leadUsers.set(rn, chatId);
       await sendLead(chatId, getLeadMsg(verify), getLeadButtons(rn, true));
+      logAudit({ regNo: rn, staffName: ns, action: 'LEAD_SENT' });
       return;
     }
   }
@@ -1186,31 +1312,43 @@ async function checkReminders() {
     try {
       const mob = safeStr(rem.customerMobile).replace(/\D/g, '');
       const cleanMob = mob.startsWith('91') && mob.length > 10 ? mob.substring(2) : mob;
-      const msg = `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
-
+      
       const rowMap = await getRowMap();
       const rowNum = rowMap[rem.regNo];
+      
       if (rowNum) {
         const rowData = await getLeadRowData(rowNum);
         if (safeStr(rowData[CONFIG.LEAD_COLS.STATUS]).toUpperCase() === 'DONE') {
-          await sendMessage(rem.chatId, msg + '\n\n⚠️ This lead is already marked DONE.', getMainButtons());
+          await sendMessage(rem.chatId, `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n⚠️ This lead is already marked DONE.`, getMainButtons());
           await remindersCollection.updateOne({ _id: rem._id }, { $set: { fired: true } });
           continue;
         }
+        
         const currentDate = formatDate();
         const currentTime = formatTime();
+        
+        const botResp = `⏰ REMINDER FIRED @ ${currentTime} | Prev: ${rem.reviewText || ''} | By: ${rem.staffName} | PENDING`;
         await updateLeadCells(rowNum, [
           { col: CONFIG.LEAD_COLS.STAFF_NAME, value: rem.staffName },
           { col: CONFIG.LEAD_COLS.STATUS, value: 'SENT' },
           { col: CONFIG.LEAD_COLS.SENT_TIME, value: currentTime },
-          { col: CONFIG.LEAD_COLS.DATE, value: currentDate }
+          { col: CONFIG.LEAD_COLS.DATE, value: currentDate },
+          { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }
         ]);
+        
         userLeads.set(rem.chatId, rem.regNo);
         leadUsers.set(rem.regNo, rem.chatId);
+        
+        const msg = `⏰ *REMINDER CALLBACK - Time to call back!*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Previous Note:* ${rem.reviewText || ''}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
+        
         await sendLead(rem.chatId, msg + '\n\n' + getLeadMsg(rowData), getLeadButtons(rem.regNo, true));
+        
+        logAudit({ regNo: rem.regNo, staffName: rem.staffName, action: 'REMINDER_FIRED', reviewText: rem.reviewText, reminderType: rem.reminderType });
       } else {
+        const msg = `⏰ *CALLBACK REMINDER*\n\n👤 *Customer:* ${rem.customerName}\n📱 *Mobile:* +${cleanMob}\n🚗 *Reg No:* ${rem.regNo}\n📝 *Note:* ${rem.reviewText}\n⏱️ *Type:* ${rem.reminderType}\n\n👉 *Call back now!*`;
         await sendMessage(rem.chatId, msg, getMainButtons());
       }
+      
       await remindersCollection.updateOne({ _id: rem._id }, { $set: { fired: true } });
     } catch (e) {
       console.error('Reminder error:', e);
@@ -1224,18 +1362,13 @@ async function checkExpiredLocks() {
     const rowMap = await getRowMap();
     const rowNum = rowMap[lock.regNo];
     if (rowNum) {
-      await updateLeadCells(rowNum, [
-        { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
-        { col: CONFIG.LEAD_COLS.STATUS, value: '' },
-        { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
-        { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
-        { col: CONFIG.LEAD_COLS.DATE, value: '' },
-        { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
-      ]);
+      const rowData = await getLeadRowData(rowNum);
+      await expireLead(lock.regNo, rowNum, rowData);
+    } else {
+      await tempLocksCollection.deleteOne({ _id: lock._id });
+      const uc = leadUsers.get(lock.regNo);
+      if (uc) { userLeads.delete(uc); leadUsers.delete(lock.regNo); }
     }
-    await tempLocksCollection.deleteOne({ _id: lock._id });
-    const uc = leadUsers.get(lock.regNo);
-    if (uc) { userLeads.delete(uc); leadUsers.delete(lock.regNo); }
   }
 }
 
