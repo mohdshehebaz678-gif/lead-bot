@@ -490,6 +490,64 @@ function isFinalResponse(text) {
   return false;
 }
 
+// ==================== AI SMART REVIEW PARSER (NEW) ====================
+function parseSmartReview(text) {
+  const t = ' ' + text.toLowerCase().replace(/[.,!?;:'"()-]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  
+  // 1. FINAL RESPONSE (highest priority)
+  if (isFinalResponse(text)) {
+    return { category: 'FINAL', action: 'AUTO_DONE', reviewLabel: 'FINAL RESPONSE', confidence: 'high' };
+  }
+  
+  // 2. NOT CONNECTED / SWITCHED OFF / NETWORK ISSUE
+  const notConnPatterns = [
+    /\b(?:switch\s*off|switched\s*off|phone\s*band|mobile\s*band|number\s*band|out\s*of\s*network|no\s*network|network\s*nahi|not\s*reachable|unreachable|call\s*nahi\s*lag|phone\s*nahi\s*lag|out\s*of\s*reach|network\s*issue|network\s*problem|switchoff)\b/,
+    /\b(?:band\s*hai|band\s*tha|switch\s*off\s*hai|switch\s*off\s*tha|network\s*issue|network\s*problem|no\s*service|not\s*in\s*service|invalid\s*number|wrong\s*number)\b/,
+    /\b(?:phone\s*band\s*hai|mobile\s*band\s*hai|number\s*band\s*hai|call\s*nahi\s*lag\s*raha|phone\s*nahi\s*lag\s*raha|unreachable\s*hai)\b/
+  ];
+  if (notConnPatterns.some(p => p.test(t))) {
+    return { category: 'NOT_CONNECTED', action: 'COOLING_2H', reviewLabel: 'NOT CONNECTED', confidence: 'high' };
+  }
+  
+  // 3. RINGING (NO PICKUP)
+  const ringingPatterns = [
+    /\b(?:ringing|ring\s*kar|ring\s*ho|pick\s*nahi|receive\s*nahi|utha\s*nahi|uthaaya\s*nahi|receive\s*nahi\s*kar|not\s*picking)\b/,
+    /\b(?:phone\s*utha\s*nahi\s*raha|call\s*receive\s*nahi\s*ho\s*raha|ring\s*ho\s*raha\s*tha|ring\s*kar\s*raha\s*tha|bell\s*baj\s*rahi\s*thi)\b/
+  ];
+  if (ringingPatterns.some(p => p.test(t))) {
+    return { category: 'RINGING', action: 'COOLING_2H', reviewLabel: 'RINGING', confidence: 'high' };
+  }
+  
+  // 4. BUSY / ENGAGED
+  const busyPatterns = [
+    /\b(?:busy|engaged|line\s*busy|doosra\s*call|dusra\s*call|call\s*pe\s*tha|call\s*pe\s*hai|baat\s*kar\s*raha\s*tha|busy\s*tha|busy\s*hai|line\s*engaged)\b/,
+    /\b(?:dusre\s*call\s*pe\s*hai|doosre\s*number\s*pe\s*baat\s*kar\s*raha\s*hai|busy\s*aa\s*raha\s*hai|engaged\s*hai)\b/
+  ];
+  if (busyPatterns.some(p => p.test(t))) {
+    return { category: 'BUSY', action: 'COOLING_2H', reviewLabel: 'BUSY', confidence: 'high' };
+  }
+  
+  // 5. OUT OF AREA / OUT OF STATION / TRAVELLING
+  const outAreaPatterns = [
+    /\b(?:out\s*of\s*area|out\s*of\s*station|out\s*of\s*city|out\s*of\s*town|gaon\s*gaya|village\s*gaya|ghar\s*pe\s*nahi|not\s*in\s*town|traveling|tour\s*pe|bahar\s*gaya|out\s*of\s*state|out\s*of\s*country)\b/,
+    /\b(?:shehar\s*se\s*bahar\s*hai|gaon\s*mein\s*hai|station\s*pe\s*nahi\s*hai|travel\s*kar\s*raha\s*hai|out\s*of\s*station\s*hai)\b/
+  ];
+  if (outAreaPatterns.some(p => p.test(t))) {
+    return { category: 'OUT_OF_AREA', action: 'COOLING_2H', reviewLabel: 'OUT OF AREA', confidence: 'high' };
+  }
+  
+  // 6. CALLBACK REMINDER (contains time but no standard status)
+  const hasTime = /(\d{1,2})\s*(?:min|minute|ghanta|hour|din|day|week)/.test(t) ||
+                  /(?:kal|aaj|parso|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/.test(t) ||
+                  /(?:baad\s*mein|baad\s*me|bad\s*me|callback|call\s*back)/.test(t);
+  if (hasTime && !isFinalResponse(text)) {
+    return { category: 'CALLBACK_REMINDER', action: 'SET_REMINDER', reviewLabel: text, confidence: 'medium' };
+  }
+  
+  // 7. UNKNOWN → True OTHER (Permanent Lock)
+  return { category: 'UNKNOWN', action: 'PERMANENT_LOCK', reviewLabel: text, confidence: 'low' };
+}
+
 function detectReminder(text, chatId, staffName, regNo, leadData) {
   const now = new Date();
   const lt = text.toLowerCase().trim();
@@ -752,24 +810,103 @@ async function handleText(text, chatId, userId) {
       logAudit({ regNo, staffName: sn, action: 'OTHER_REVIEW', reviewText: text });
 
       const freshRow = await getLeadRowData(rowNum);
-      const reminder = detectReminder(text, chatId, sn, regNo, freshRow);
+      const smart = parseSmartReview(text);
 
-      if (messageId) {
-        await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false));
+      // 1. FINAL RESPONSE → Auto DONE
+      if (smart.category === 'FINAL') {
+        await updateLeadCells(rowNum, [
+          { col: CONFIG.LEAD_COLS.STATUS, value: 'DONE' },
+          { col: CONFIG.LEAD_COLS.DONE_TIME, value: formatTime() }
+        ]);
+        const finalRowData = await getLeadRowData(rowNum);
+        await copyToDailingCount(finalRowData);
+        await clearCooling(regNo);
+        await leadRotationsCollection.deleteOne({ regNo });
+        pendingReviews.delete(chatId); userLeads.delete(chatId); leadUsers.delete(regNo);
+        if (messageId) {
+          await editMessage(chatId, messageId, getLeadMsg(finalRowData) + `\n\n🏁 *FINAL RESPONSE — Auto Completed*`, null).catch(() => {});
+        }
+        await sendMessage(chatId, `🤖 *AI AUTO-REVIEW*\nDetected: *🏁 FINAL RESPONSE*\n\n✅ Lead auto-completed. No callback needed.\n📋 Review: ${text}`, getMainButtons());
+        logAudit({ regNo, staffName: sn, action: 'AI_FINAL_AUTO_DONE', reviewText: text });
+        await incrementStat(sn, 'done');
+        return;
       }
 
-      if (reminder && reminder.isFinal) {
-        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
+      // 2. STANDARD REVIEWS (BUSY, RINGING, NOT CONNECTED, OUT OF AREA)
+      const standardMap = {
+        'BUSY': 'BUSY',
+        'RINGING': 'RINGING',
+        'NOT_CONNECTED': 'NOT CONNECTED',
+        'OUT_OF_AREA': 'OUT OF AREA'
+      };
+      
+      if (standardMap[smart.category]) {
+        const reviewLabel = standardMap[smart.category];
+        await setCooling(regNo, 2);
+        pendingReviews.delete(chatId); userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
+        const expiry = new Date(Date.now() + 2 * 3600000);
+        const botResp = `🔒 ${reviewLabel} | By: ${sn} | ⏱️ 2Hr cooling till ${formatTime(expiry)}`;
+        await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: botResp }]);
+        logAudit({ regNo, staffName: sn, action: 'AI_COOLING_START', reviewType: reviewLabel, expiryTime: expiry });
+        if (messageId) {
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + `\n\n🤖 AI: ${reviewLabel}`, getLeadButtons(regNo, false)).catch(() => {});
+        }
+        await sendMessage(chatId, `🤖 *AI UNDERSTOOD:* ${reviewLabel}\n🔒 ${sn}\n⏱️ 2 HOURS to DONE!\n\n⚠️ Click DONE to complete!`, getMainButtons());
+        await incrementStat(sn, smart.category.toLowerCase());
+        return;
+      }
+
+      // 3. CALLBACK REMINDER (time detected but not standard status)
+      if (smart.category === 'CALLBACK_REMINDER') {
+        const reminder = detectReminder(text, chatId, sn, regNo, freshRow);
+        if (reminder && reminder.isFinal) {
+          if (messageId) {
+            await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false)).catch(() => {});
+          }
+          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
+          logAudit({ regNo, staffName: sn, action: 'FINAL_RESPONSE', reviewText: text });
+          await incrementStat(sn, 'otherReview');
+          pendingReviews.delete(chatId);
+          return;
+        } else if (reminder) {
+          const tStr = formatTime(reminder.time);
+          if (messageId) {
+            await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false)).catch(() => {});
+          }
+          await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
+          await remindersCollection.insertOne(reminder.data);
+          logAudit({ regNo, staffName: sn, action: 'REMINDER_SET', reviewText: text, reminderType: reminder.type, fireAt: reminder.time });
+          await incrementStat(sn, 'reminders');
+          await incrementStat(sn, 'otherReview');
+          pendingReviews.delete(chatId);
+          return;
+        }
+        // detectReminder couldn't parse → fall through to UNKNOWN
+      }
+
+      // 4. UNKNOWN → True OTHER (Permanent Lock, no cooling)
+      const reminderFallback = detectReminder(text, chatId, sn, regNo, freshRow);
+      if (reminderFallback && reminderFallback.isFinal) {
+        if (messageId) {
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false)).catch(() => {});
+        }
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminderFallback.type}\n\n⚠️ *Click DONE to complete this lead!*`, getMainButtons());
         logAudit({ regNo, staffName: sn, action: 'FINAL_RESPONSE', reviewText: text });
         await incrementStat(sn, 'otherReview');
-      } else if (reminder) {
-        const tStr = formatTime(reminder.time);
-        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminder.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
-        await remindersCollection.insertOne(reminder.data);
-        logAudit({ regNo, staffName: sn, action: 'REMINDER_SET', reviewText: text, reminderType: reminder.type, fireAt: reminder.time });
+      } else if (reminderFallback) {
+        const tStr = formatTime(reminderFallback.time);
+        if (messageId) {
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false)).catch(() => {});
+        }
+        await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n${reminderFallback.type}\n⏰ *Reminder: ${tStr}*\n⚠️ Click DONE when complete!`, getMainButtons());
+        await remindersCollection.insertOne(reminderFallback.data);
+        logAudit({ regNo, staffName: sn, action: 'REMINDER_SET', reviewText: text, reminderType: reminderFallback.type, fireAt: reminderFallback.time });
         await incrementStat(sn, 'reminders');
         await incrementStat(sn, 'otherReview');
       } else {
+        if (messageId) {
+          await editMessage(chatId, messageId, getLeadMsg(freshRow) + '\n\n✏️ *Review:* ' + text, getLeadButtons(regNo, false)).catch(() => {});
+        }
         await sendMessage(chatId, `✅ Review: ${text}\n🔒 LOCKED: ${sn}\n\n⚠️ Click DONE to complete!`, getMainButtons());
         await incrementStat(sn, 'otherReview');
       }
