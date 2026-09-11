@@ -290,7 +290,8 @@ function getReviewButtons(regNo) {
     inline_keyboard: [
       [{ text: '📞 RINGING', callback_data: `RINGING_${regNo}` }, { text: '❌ NOT CONNECTED', callback_data: `NOTCONN_${regNo}` }],
       [{ text: '📍 OUT OF AREA', callback_data: `OUTAREA_${regNo}` }, { text: '🔴 BUSY', callback_data: `BUSY_${regNo}` }],
-      [{ text: '✏️ OTHER', callback_data: `OTHER_${regNo}` }]
+      [{ text: '✏️ OTHER', callback_data: `OTHER_${regNo}` }],
+      [{ text: '⬅️ BACK', callback_data: `BACK_${regNo}` }]
     ]
   };
 }
@@ -1258,6 +1259,11 @@ async function handleCallback(cq, chatId, userId) {
         userLeads.set(chatId, regNo); leadUsers.set(regNo, chatId);
         await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\n✏️ *Type review & send*\n\n💡 Examples:\n• 1 ghante baad call kro\n• kal call kro\n• 28 ko call kro\n• sunday ko call kro\n• call disconnect', null);
         await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
+        break;
+      }
+      case 'BACK': {
+        const rvBack = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
+        await editMessage(chatId, messageId, getLeadMsg(rowData) + '\n\nChoose action:', getLeadButtons(regNo, rvBack ? false : true));
         break;
       }
       case 'NEWEXP': {
