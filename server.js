@@ -15,9 +15,9 @@ const CONFIG = {
   STAFF_SHEET_NAME: 'STAFF NAME',
   DAILING_COUNT_SHEET: 'DAILING COUNT',
   LEAD_COLS: {
-    NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, MAKE: 4, REMARK: 5,
-    STAFF_NAME: 6, STATUS: 7, REVIEW: 8, DATE: 9,
-    SENT_TIME: 10, DONE_TIME: 11, COUNT_DIALER: 12, BOT_RESPONSE: 13
+    NAME: 0, MOBILE: 1, REG_NO: 2, EXPIRED: 3, NEW_EXPIRED: 4, MAKE: 5, REMARK: 6,
+    STAFF_NAME: 7, STATUS: 8, REVIEW: 9, DATE: 10,
+    SENT_TIME: 11, DONE_TIME: 12, COUNT_DIALER: 13, BOT_RESPONSE: 14
   },
   STAFF_COLS: {
     USER_NAME: 0, STAFF_NAME: 1, STAFF_NO: 2, ACTIVE_STATUS: 3,
@@ -176,6 +176,54 @@ function parseSheetDate(val) {
   return isNaN(d) ? new Date(9999, 0, 1) : d;
 }
 
+// ==================== NEW EXPIRY DATE PARSER ====================
+const MONTHS_LOOKUP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+function parseNewExpiryDate(text) {
+  const t = text.toLowerCase().trim();
+  const mArr = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let m;
+
+  // 20 sep 2026 / 20-sep-2026 / 20.sep.2026
+  m = t.match(/(\d{1,2})[\s\-\/.]([a-z]{3,})[\s\-\/.](\d{4})/);
+  if (m) {
+    const mi = MONTHS_LOOKUP[m[2].substring(0, 3)];
+    if (mi === undefined) return null;
+    return `${String(parseInt(m[1])).padStart(2, '0')}-${mArr[mi]}-${m[3]}`;
+  }
+
+  // 20-09-2026 / 20/09/2026 (DD-MM-YYYY)
+  m = t.match(/(\d{1,2})[\s\-\/.](\d{1,2})[\s\-\/.](\d{4})/);
+  if (m) {
+    const mi = parseInt(m[2]) - 1;
+    if (mi < 0 || mi > 11) return null;
+    return `${String(parseInt(m[1])).padStart(2, '0')}-${mArr[mi]}-${m[3]}`;
+  }
+
+  // 2026-09-20 (YYYY-MM-DD)
+  m = t.match(/(\d{4})[\s\-\/.](\d{1,2})[\s\-\/.](\d{1,2})/);
+  if (m) {
+    const mi = parseInt(m[2]) - 1;
+    if (mi < 0 || mi > 11) return null;
+    return `${String(parseInt(m[3])).padStart(2, '0')}-${mArr[mi]}-${m[1]}`;
+  }
+
+  // 20 sep / 20 sep 26 (year optional -> auto next year if past)
+  m = t.match(/(\d{1,2})[\s\-\/.]([a-z]{3,})(?:[\s\-\/.](\d{2,4}))?/);
+  if (m) {
+    const mi = MONTHS_LOOKUP[m[2].substring(0, 3)];
+    if (mi === undefined) return null;
+    let yr = new Date().getFullYear();
+    if (m[3]) yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+    const d = new Date(yr, mi, parseInt(m[1]));
+    if (isNaN(d)) return null;
+    if (d < new Date(new Date().setHours(0, 0, 0, 0))) d.setFullYear(d.getFullYear() + 1);
+    return `${String(d.getDate()).padStart(2, '0')}-${mArr[d.getMonth()]}-${d.getFullYear()}`;
+  }
+
+  return null;
+}
+
 // ==================== TELEGRAM API (NO QUEUE - INSTANT) ====================
 async function sendMessage(chatId, text, replyMarkup = null, removeKeyboard = false) {
   const payload = {
@@ -232,7 +280,8 @@ function getLeadButtons(regNo, showSkip) {
     [{ text: '📞 CALL', callback_data: `CALL_${regNo}` }, { text: '💬 WHATSAPP', callback_data: `WHATSAPP_${regNo}` }],
     [{ text: '🔍 REVIEW', callback_data: `REVIEW_${regNo}` }, { text: '✅ DONE', callback_data: `DONE_${regNo}` }]
   ];
-  if (showSkip) b.push([{ text: '⏭️ SKIP', callback_data: `SKIP_${regNo}` }]);
+  if (showSkip) b.push([{ text: '📅 NEW EXPIRY', callback_data: `NEWEXP_${regNo}` }, { text: '⏭️ SKIP', callback_data: `SKIP_${regNo}` }]);
+  else b.push([{ text: '📅 NEW EXPIRY', callback_data: `NEWEXP_${regNo}` }]);
   return { inline_keyboard: b };
 }
 
@@ -260,7 +309,10 @@ function getLeadMsg(rowData) {
   let ds = safeStr(d2);
   const re = safeStr(rm).toUpperCase() === 'EXPIRE' ? '🔴 EXPIRE' : '🟢 NEW';
 
-  let msg = `📋 *NEW LEAD*\n\n👤 *Name:* ${nm || ''}\n📱 *Mobile:* ${mb || ''}\n🚗 *Reg:* ${rn || ''}\n📅 *Date:* ${ds}\n${re}\n🏭 *Make:* ${mk || ''}\n`;
+  const ne = safeStr(rowData[CONFIG.LEAD_COLS.NEW_EXPIRED]);
+  let msg = `📋 *NEW LEAD*\n\n👤 *Name:* ${nm || ''}\n📱 *Mobile:* ${mb || ''}\n🚗 *Reg:* ${rn || ''}\n📅 *Date:* ${ds}\n${re}\n`;
+  if (ne) msg += `📅 *New Expiry:* ${ne}\n`;
+  msg += `🏭 *Make:* ${mk || ''}\n`;
   if (sa) msg += `👨‍💼 *Staff:* ${sa}\n`;
   if (st) msg += `📊 *Status:* ${st}\n`;
   if (botResp) msg += `🤖 *Bot:* ${botResp}\n`;
@@ -344,7 +396,7 @@ async function updateStaffChatIdInSheet(userName, chatId) {
 async function getSheetData() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A1:N10000`
+    range: `${CONFIG.LEADS_SHEET_NAME}!A1:O10000`
   });
   return res.data.values || [];
 }
@@ -371,7 +423,7 @@ async function getRowMap() {
 async function getLeadRowData(rowNum) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: CONFIG.SHEET_ID,
-    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:N${rowNum}`
+    range: `${CONFIG.LEADS_SHEET_NAME}!A${rowNum}:O${rowNum}`
   });
   return (res.data.values?.[0] || []).map(safeStr);
 }
@@ -403,6 +455,7 @@ async function copyToDailingCount(rowData) {
       rowData[CONFIG.LEAD_COLS.MOBILE] || '',
       rowData[CONFIG.LEAD_COLS.REG_NO] || '',
       rowData[CONFIG.LEAD_COLS.EXPIRED] || '',
+      rowData[CONFIG.LEAD_COLS.NEW_EXPIRED] || '',
       rowData[CONFIG.LEAD_COLS.MAKE] || '',
       rowData[CONFIG.LEAD_COLS.REMARK] || '',
       rowData[CONFIG.LEAD_COLS.STAFF_NAME] || '',
@@ -418,7 +471,7 @@ async function copyToDailingCount(rowData) {
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: CONFIG.SHEET_ID,
-      range: `${CONFIG.DAILING_COUNT_SHEET}!A${nextRow}:O${nextRow}`,
+      range: `${CONFIG.DAILING_COUNT_SHEET}!A${nextRow}:P${nextRow}`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [copyData] }
     });
@@ -454,6 +507,7 @@ function isRateLimited(userId) {
 
 // In-memory state
 const pendingReviews = new Map();
+const pendingNewExpiry = new Map();
 const userLeads = new Map();
 const leadUsers = new Map();
 
@@ -689,6 +743,7 @@ async function expireLead(regNo, rowNum, rowData) {
     { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
     { col: CONFIG.LEAD_COLS.STATUS, value: '' },
     { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+    { col: CONFIG.LEAD_COLS.NEW_EXPIRED, value: '' },
     { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
     { col: CONFIG.LEAD_COLS.DATE, value: '' },
     { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
@@ -778,6 +833,43 @@ async function processUpdateAsync(update, chatId, userId) {
 }
 
 async function handleText(text, chatId, userId) {
+  // 📅 NEW EXPIRY input handler
+  const pendingExp = pendingNewExpiry.get(chatId);
+  if (pendingExp) {
+    if (text === '/cancel') {
+      pendingNewExpiry.delete(chatId);
+      await sendMessage(chatId, '❌ New Expiry cancelled.\n🔒 Lead locked.', getMainButtons());
+      return;
+    }
+    if (text.startsWith('/') || text === '▶️ START LEAD' || text === '📊 MY STATUS') {
+      pendingNewExpiry.delete(chatId);
+    } else {
+      const { regNo, messageId } = pendingExp;
+      const parsedDate = parseNewExpiryDate(text);
+      if (!parsedDate) {
+        await sendMessage(chatId, '❌ Invalid date!\n\nExamples:\n• 20 sep 2026\n• 20-09-2026\n• 20/09/2026\n• 20 sep\n\nTry again or /cancel', null, true);
+        return;
+      }
+      const rowMap = await getRowMap();
+      const rowNum = rowMap[regNo];
+      if (!rowNum) {
+        pendingNewExpiry.delete(chatId);
+        await sendMessage(chatId, '❌ Lead not found in sheet.', getMainButtons());
+        return;
+      }
+      await updateLeadCells(rowNum, [{ col: CONFIG.LEAD_COLS.NEW_EXPIRED, value: parsedDate }]);
+      const stf = speedCache.getStaffByChatId(chatId);
+      logAudit({ regNo, staffName: stf ? stf.name : '', action: 'NEW_EXPIRY_SET', reviewText: parsedDate });
+      const freshRow = await getLeadRowData(rowNum);
+      if (messageId) {
+        await editMessage(chatId, messageId, getLeadMsg(freshRow), getLeadButtons(regNo, true)).catch(() => {});
+      }
+      await sendMessage(chatId, `📅 *NEW EXPIRY SAVED*\n\n🚗 Reg: ${regNo}\n📅 New Expiry: *${parsedDate}*`, getMainButtons());
+      pendingNewExpiry.delete(chatId);
+      return;
+    }
+  }
+
   const pending = pendingReviews.get(chatId);
 
   if (pending) {
@@ -1168,6 +1260,11 @@ async function handleCallback(cq, chatId, userId) {
         await sendMessage(chatId, `✏️ Type review & send\n🔐 PERMANENT LOCK: ${sName}\n/cancel to cancel`, null, true);
         break;
       }
+      case 'NEWEXP': {
+        pendingNewExpiry.set(chatId, { regNo, messageId });
+        await sendMessage(chatId, `📅 *Enter NEW EXPIRY date*\n\n🚗 Reg: ${regNo}\n👤 ${safeStr(rowData[CONFIG.LEAD_COLS.NAME])}\n\nExamples:\n• 20 sep 2026\n• 20-09-2026\n• 20/09/2026\n• 20 sep\n\n/cancel to cancel`, null, true);
+        break;
+      }
       case 'DONE': {
         const rv = safeStr(rowData[CONFIG.LEAD_COLS.REVIEW]);
         if (!rv) { await sendMessage(chatId, '❌ REVIEW mandatory before DONE!', getMainButtons()); return; }
@@ -1230,12 +1327,13 @@ async function handleCallback(cq, chatId, userId) {
           { col: CONFIG.LEAD_COLS.STAFF_NAME, value: '' },
           { col: CONFIG.LEAD_COLS.STATUS, value: '' },
           { col: CONFIG.LEAD_COLS.REVIEW, value: '' },
+          { col: CONFIG.LEAD_COLS.NEW_EXPIRED, value: '' },
           { col: CONFIG.LEAD_COLS.SENT_TIME, value: '' },
           { col: CONFIG.LEAD_COLS.DATE, value: '' },
           { col: CONFIG.LEAD_COLS.BOT_RESPONSE, value: '' }
         ]);
         logAudit({ regNo, staffName: sName, action: 'SKIP' });
-        pendingReviews.delete(chatId); await clearCooling(regNo); userLeads.delete(chatId); leadUsers.delete(regNo);
+        pendingReviews.delete(chatId); pendingNewExpiry.delete(chatId); await clearCooling(regNo); userLeads.delete(chatId); leadUsers.delete(regNo);
         await sendMessage(chatId, '⏭️ Skipped.\nClick ▶️ START LEAD', getMainButtons());
         break;
       }
