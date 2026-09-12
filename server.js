@@ -270,6 +270,41 @@ async function deleteMessage(chatId, messageId) {
   }
 }
 
+// ==================== WHATSAPP MULTI-LANGUAGE TEMPLATES ====================
+const WA_STATE_LANG = {
+  MH: 'mr', GJ: 'gu', KA: 'kn', TN: 'ta', AP: 'te', TS: 'te',
+  KL: 'ml', WB: 'bn', PB: 'pa', CH: 'pa'
+  // UP, MP, RJ, HR, DL, BR, CG, JK, UK, HP, AS, OR, NE states... → Hindi default
+};
+
+const WA_LANG_NAMES = {
+  en: 'English', hi: 'Hindi', mr: 'Marathi', gu: 'Gujarati', kn: 'Kannada',
+  ta: 'Tamil', te: 'Telugu', ml: 'Malayalam', bn: 'Bengali', pa: 'Punjabi'
+};
+
+const WA_TEMPLATES = {
+  en: `🚗 *Insurance Renewal Alert!*\n\nVehicle: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans available:\n🛡 *Third Party* – Best price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  hi: `🚗 *Insurance Renewal Alert!*\n\nवाहन: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans available:\n🛡 *Third Party* – कम price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply करें:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  mr: `🚗 *Insurance Renewal Alert!*\n\nगाडी: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – कमी किंमत (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply करा:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  gu: `🚗 *Insurance Renewal Alert!*\n\nવાહન: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – ઓછી price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply કરો:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  kn: `🚗 *Insurance Renewal Alert!*\n\nವಾಹನ: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – ಕಡಿಮೆ price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply ಮಾಡಿ:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  ta: `🚗 *Insurance Renewal Alert!*\n\nவாகனம்: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – குறைந்த price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply செய்யவும்:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  te: `🚗 *Insurance Renewal Alert!*\n\nవాహనం: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – తక్కువ price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply చేయండి:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  ml: `🚗 *Insurance Renewal Alert!*\n\nവാഹനം: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – കുറഞ്ഞ price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply ചെയ്യുക:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  bn: `🚗 *Insurance Renewal Alert!*\n\nগাড়ি: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – কম price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply করুন:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`,
+  pa: `🚗 *Insurance Renewal Alert!*\n\nਗੱਡੀ: *{reg}*\nExpiry: *{date}* ⏰\n\nPlans:\n🛡 *Third Party* – ਘੱਟ price (mandatory cover)\n🚗 *Comprehensive* – Full cover (Zero Dep + Cashless)\n\nReply ਕਰੋ:\n✔ TP – Third Party quote\n✔ COMP – Comprehensive quote\n✔ CALL – Expert\n\n*My Insurance Sathi*`
+};
+
+function detectWaLang(regNo) {
+  const state = safeStr(regNo).substring(0, 2).toUpperCase();
+  return WA_STATE_LANG[state] || 'hi';
+}
+
+function getWhatsAppMessage(regNo, expiryDate, lang) {
+  const tpl = WA_TEMPLATES[lang] || WA_TEMPLATES.hi;
+  return tpl.replace('{reg}', regNo).replace('{date}', expiryDate);
+}
+
 // ==================== BUTTONS & MESSAGES ====================
 function getMainButtons() {
   return { keyboard: [[{ text: '▶️ START LEAD' }], [{ text: '📊 MY STATUS' }]], resize_keyboard: true, one_time_keyboard: false };
@@ -1176,10 +1211,11 @@ async function handleCallback(cq, chatId, userId) {
         const wName = safeStr(rowData[CONFIG.LEAD_COLS.NAME]);
         const wReg = safeStr(rowData[CONFIG.LEAD_COLS.REG_NO]);
         const wDs = safeStr(rowData[CONFIG.LEAD_COLS.EXPIRED] || rowData[CONFIG.LEAD_COLS.DATE]);
-        const wMsg = `🚗 Hello ${wName}!\n\n(*My Insurance Saathi*)\n\nAapki gaadi *${wReg}* ka insurance *${wDs}* ko expire ho raha hai / ho chuka hai.\n\n👉 Kya aap renewal karwana chahenge best price me?\n\n✅ Zero Dep\n✅ Cashless Claim\n✅ Best Company Options\n\nReply karein:\n✔ YES – Quote ke liye\n✔ CALL – Direct baat karne ke liye`;
+        const waLang = detectWaLang(wReg);
+        const wMsg = getWhatsAppMessage(wReg, wDs, waLang);
         const wLink = 'https://wa.me/91' + wDig + '?text=' + encodeURIComponent(wMsg);
-        await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
-        logAudit({ regNo, staffName: sName, action: 'WHATSAPP_CLICKED' });
+        await sendMessage(chatId, `📱 *WhatsApp Ready*\n\n👤 ${wName}\n📱 +${wDig}\n🚗 ${wReg}\n🌐 Language: ${WA_LANG_NAMES[waLang]} (auto-detect)\n\n👇 Tap button:`, { inline_keyboard: [[{ text: '📱 Open WhatsApp Chat', url: wLink }]] });
+        logAudit({ regNo, staffName: sName, action: 'WHATSAPP_CLICKED', reviewType: waLang });
         await incrementStat(sName, 'whatsapp');
         break;
       }
